@@ -6,8 +6,8 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::field::extension::Extendable;
-use crate::hash::hash_types::{HashOutTarget, MerkleCapTarget, RichField};
-use crate::hash::hashing::SPONGE_WIDTH;
+use crate::hash::hash_types::{HashOutTarget, MerkleCapTarget, RichField, NUM_HASH_OUT_ELTS};
+use crate::hash::hashing::{PlonkyPermutation, SPONGE_WIDTH};
 use crate::hash::merkle_tree::MerkleCap;
 use crate::iop::target::{BoolTarget, Target};
 use crate::plonk::circuit_builder::CircuitBuilder;
@@ -118,21 +118,30 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         merkle_cap: &MerkleCapTarget,
         proof: &MerkleProofTarget,
     ) {
+        debug_assert!(H::AlgebraicPermutation::RATE >= NUM_HASH_OUT_ELTS);
+
         let zero = self.zero();
         let mut state: HashOutTarget = self.hash_or_noop::<H>(leaf_data);
+        debug_assert_eq!(state.elements.len(), NUM_HASH_OUT_ELTS);
 
         for (&bit, &sibling) in leaf_index_bits.iter().zip(&proof.siblings) {
-            let mut perm_inputs = [zero; SPONGE_WIDTH];
-            perm_inputs[..4].copy_from_slice(&state.elements);
-            perm_inputs[4..8].copy_from_slice(&sibling.elements);
+            debug_assert_eq!(sibling.elements.len(), NUM_HASH_OUT_ELTS);
+
+            let mut perm_inputs = H::AlgebraicPermutation::default();
+            perm_inputs.set_from_slice(&state.elements, 0);
+            perm_inputs.set_from_slice(&sibling.elements, NUM_HASH_OUT_ELTS);
+            // Ensure the rest of the state, if any, is zero:
+            perm_inputs.set_from_iter(std::iter::repeat(zero), 2 * NUM_HASH_OUT_ELTS);
             let perm_outs = self.permute_swapped::<H>(perm_inputs, bit);
-            let hash_outs = perm_outs[0..4].try_into().unwrap();
+            let hash_outs = perm_outs.squeeze()[0..NUM_HASH_OUT_ELTS]
+                .try_into()
+                .unwrap();
             state = HashOutTarget {
                 elements: hash_outs,
             };
         }
 
-        for i in 0..4 {
+        for i in 0..NUM_HASH_OUT_ELTS {
             let result = self.random_access(
                 cap_index,
                 merkle_cap.0.iter().map(|h| h.elements[i]).collect(),
