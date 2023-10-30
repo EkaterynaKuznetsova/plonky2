@@ -132,7 +132,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for U32ArithmeticG
                     for(var x = 0; x < max_limb; x++) {{
                         product[x] <== GlExtSub()(this_limb[j], GlExt()(x, 0));
                     }}
-                    out[index] <== ConstraintPush()(constraints[index], filter, GlExtMul()(GlExtMul()(product[0], product[1])GlExtMul()(product[2], product[3])));
+                    out[index] <== ConstraintPush()(constraints[index], filter, GlExtMul()(GlExtMul()(product[0], product[1]), GlExtMul()(product[2], product[3])));
                     index++;
                     if (j < midpoint) combined_low_limbs <== GlExtAdd()(GlExtMul()(GlExt()(base2, 0), GlExt()(0, 0)), this_limb[j]);
                     else combined_high_limbs <== GlExtAdd()(GlExtMul()(GlExt()(base2, 0), GlExt()(0, 0)), this_limb[j]);
