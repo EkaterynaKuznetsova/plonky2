@@ -94,30 +94,65 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for U32ArithmeticG
     }
 
     fn export_circom_verification_code(&self) -> String {
-        //         std::println!("ARITHMETIC!!!");
-        //         let mut template_str = format!(
-        //             "template ArithmeticU32$NUM_OPS() {{
-        //   signal input constants[NUM_OPENINGS_CONSTANTS()][2];
-        //   signal input wires[NUM_OPENINGS_WIRES()][2];
-        //   signal input public_input_hash[4];
-        //   signal input constraints[NUM_GATE_CONSTRAINTS()][2];
-        //   signal output out[NUM_GATE_CONSTRAINTS()][2];
+        let mut template_str = format!(
+                     "template ArithmeticU32$NUM_OPS() {{
+            signal input constants[NUM_OPENINGS_CONSTANTS()][2];
+            signal input wires[NUM_OPENINGS_WIRES()][2];
+            signal input public_input_hash[4];
+            signal input constraints[NUM_GATE_CONSTRAINTS()][2];
+            signal output out[NUM_GATE_CONSTRAINTS()][2];
 
-        //   signal filter[2];
-        //   $SET_FILTER;
+            signal filter[2];
+            $SET_FILTER;
 
-        //   for (var i = 0; i < $NUM_OPS; i++) {{
-        //     out[i] <== ConstraintPush()(constraints[i], filter, GlExtSub()(wires[4 * i + 3], GlExtAdd()(GlExtMul()(GlExtMul()(wires[4 * i], wires[4 * i + 1]), constants[$NUM_SELECTORS + 0]), GlExtMul()(wires[4 * i + 2], constants[$NUM_SELECTORS + 1]))));
-        //   }}
+            var index = 0; 
+            var max_u32 = 0xFFFFFFFF;
+            var base = 1 << 32;
+            signal computed_output;
+            signal combined_output;
 
-        //   for (var i = $NUM_OPS; i < NUM_GATE_CONSTRAINTS(); i++) {{
-        //     out[i] <== constraints[i];
-        //   }}
-        // }}"
-        //         ).to_string();
-        //         template_str = template_str.replace("$NUM_OPS", &*self.num_ops.to_string());
-        //         template_str
-        todo!()
+            var midpoint = $NUM_LIMBS / 2;
+            var base2 = 1 << 2; 
+            var max_limb = 4;
+            signal this_limb[$NUM_LIMBS];
+            signal product[max_limb];
+            signal combined_low_limbs;
+            signal combined_high_limbs;
+
+            for (var i = 0; i < $NUM_OPS; i++) {{
+                computed_output <== GlExtAdd()(GlExtMul()(wires[6 * i], wires[6 * i + 1]), wires[6 * i + 2]);
+                combined_output <== GlExtAdd()(GlExtMul()(wires[6 * i + 4], GlExt()(base, 0)), wires[6 * i + 3]);
+                out[index] <== ConstraintPush()(constraints[index], filter, GlExtMul()(GlExtSub()(GlExtMul()(wires[6 * i + 5], GlExtSub()(GlExt()(max_u32, 0),  wires[6 * i + 4])), GlExt()(1, 0)), wires[6 * i + 3]));
+                index++;
+                out[index] <== ConstraintPush()(constraints[index], filter, GlExtSub()(combined_output, computed_output));
+                index++;
+                
+                for(var j = $NUM_LIMBS - 1; j >= 0; j--) {{
+                    this_limb[j] <== wires[6 * $NUM_OPS * $NUM_LIMBS * i + j];
+                    for(var x = 0; x < max_limb; x++) {{
+                        product[x] <== GlExtSub()(this_limb[j], GlExt()(x, 0));
+                    }}
+                    out[index] <== ConstraintPush()(constraints[index], filter, GlExtMul()(GlExtMul()(product[0], product[1])GlExtMul()(product[2], product[3])));
+                    index++;
+                    if (j < midpoint) combined_low_limbs <== GlExtAdd()(GlExtMul()(GlExt()(base2, 0), GlExt()(0, 0)), this_limb[j]);
+                    else combined_high_limbs <== GlExtAdd()(GlExtMul()(GlExt()(base2, 0), GlExt()(0, 0)), this_limb[j]);
+
+                }}
+                
+                out[index] <== ConstraintPush()(constraints[index], filter, GlExtSub()(combined_low_limbs, wires[6 * i + 3]));
+                index++;
+                out[index] <== ConstraintPush()(constraints[index], filter, GlExtSub()(combined_high_limbs, wires[6 * i + 4]));
+                index++;
+
+            }}
+
+            for (var i = $NUM_OPS; i < NUM_GATE_CONSTRAINTS(); i++) {{
+                out[i] <== constraints[i];
+            }}
+         }}"
+                 ).to_string();
+        template_str = template_str.replace("$NUM_OPS", &*self.num_ops.to_string());
+        template_str
     }
     fn export_solidity_verification_code(&self) -> String {
         let mut template_str = format!(
