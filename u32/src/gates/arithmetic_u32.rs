@@ -95,7 +95,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for U32ArithmeticG
 
     fn export_circom_verification_code(&self) -> String {
         let mut template_str = format!(
-                     "template ArithmeticU32$NUM_OPS() {{
+                     "template U32ArithmeticGate$NUM_OPS() {{
             signal input constants[NUM_OPENINGS_CONSTANTS()][2];
             signal input wires[NUM_OPENINGS_WIRES()][2];
             signal input public_input_hash[4];
