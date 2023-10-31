@@ -129,7 +129,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for U32ArithmeticG
 	  index++;
 	
 	  for(var j = $NUM_LIMBS - 1; j >= 0; j--) {{
-          this_limb[j] <== wires[6 * $NUM_OPS * $NUM_LIMBS * i + j];
+          this_limb[j] <== wires[6 * $NUM_OPS + $NUM_LIMBS * i + j];
 		  for(var x = 0; x < max_limb; x++) {{
             product[x] <== GlExtSub()(this_limb[j], GlExt()(x, 0));
           }}
