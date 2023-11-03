@@ -25,7 +25,7 @@ pub trait GenericHashOut<F: RichField>:
 }
 
 /// Trait for hash functions.
-pub trait Hasher<F: RichField>: Sized + Copy + Debug + Eq + PartialEq {
+pub trait Hasher<F: RichField>: Sized + Clone + Debug + Eq + PartialEq {
     /// Size of `Hash` in bytes.
     const HASH_SIZE: usize;
 
@@ -38,12 +38,13 @@ pub trait Hasher<F: RichField>: Sized + Copy + Debug + Eq + PartialEq {
     /// Hash a message without any padding step. Note that this can enable length-extension attacks.
     /// However, it is still collision-resistant in cases where the input has a fixed length.
     fn hash_no_pad(input: &[F]) -> Self::Hash;
+    fn hash_public_inputs(input: &[F]) -> Self::Hash;
 
     /// Pad the message using the `pad10*1` rule, then hash it.
     fn hash_pad(input: &[F]) -> Self::Hash {
         let mut padded_input = input.to_vec();
         padded_input.push(F::ONE);
-        while (padded_input.len() + 1) % Self::Permutation::WIDTH != 0 {
+        while (padded_input.len() + 1) % SPONGE_WIDTH != 0 {
             padded_input.push(F::ZERO);
         }
         padded_input.push(F::ONE);
@@ -53,7 +54,7 @@ pub trait Hasher<F: RichField>: Sized + Copy + Debug + Eq + PartialEq {
     /// Hash the slice if necessary to reduce its length to ~256 bits. If it already fits, this is a
     /// no-op.
     fn hash_or_noop(inputs: &[F]) -> Self::Hash {
-        if inputs.len() * 8 <= Self::HASH_SIZE {
+        if inputs.len() <= 4 {
             let mut inputs_bytes = vec![0u8; Self::HASH_SIZE];
             for i in 0..inputs.len() {
                 inputs_bytes[i * 8..(i + 1) * 8]
@@ -70,15 +71,24 @@ pub trait Hasher<F: RichField>: Sized + Copy + Debug + Eq + PartialEq {
 
 /// Trait for algebraic hash functions, built from a permutation using the sponge construction.
 pub trait AlgebraicHasher<F: RichField>: Hasher<F, Hash = HashOut<F>> {
-    type AlgebraicPermutation: PlonkyPermutation<Target>;
+    // TODO: Adding a `const WIDTH: usize` here yields a compiler error down the line.
+    // Maybe try again in a while.
 
     /// Circuit to conditionally swap two chunks of the inputs (useful in verifying Merkle proofs),
     /// then apply the permutation.
     fn permute_swapped<const D: usize>(
-        inputs: Self::AlgebraicPermutation,
+        inputs: [Target; SPONGE_WIDTH],
         swap: BoolTarget,
         builder: &mut CircuitBuilder<F, D>,
-    ) -> Self::AlgebraicPermutation
+    ) -> [Target; SPONGE_WIDTH]
+    where
+        F: RichField + Extendable<D>;
+
+    /// Circuit to calculate hash out for public inputs.
+    fn public_inputs_hash<const D: usize>(
+        inputs: Vec<Target>,
+        builder: &mut CircuitBuilder<F, D>,
+    ) -> HashOutTarget
     where
         F: RichField + Extendable<D>;
 }

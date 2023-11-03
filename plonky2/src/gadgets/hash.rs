@@ -8,8 +8,8 @@ use crate::plonk::config::AlgebraicHasher;
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     pub fn permute<H: AlgebraicHasher<F>>(
         &mut self,
-        inputs: H::AlgebraicPermutation,
-    ) -> H::AlgebraicPermutation {
+        inputs: [Target; SPONGE_WIDTH],
+    ) -> [Target; SPONGE_WIDTH] {
         // We don't want to swap any inputs, so set that wire to 0.
         let _false = self._false();
         self.permute_swapped::<H>(inputs, _false)
@@ -19,9 +19,16 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     /// a cryptographic permutation.
     pub(crate) fn permute_swapped<H: AlgebraicHasher<F>>(
         &mut self,
-        inputs: H::AlgebraicPermutation,
+        inputs: [Target; SPONGE_WIDTH],
         swap: BoolTarget,
-    ) -> H::AlgebraicPermutation {
+    ) -> [Target; SPONGE_WIDTH] {
         H::permute_swapped(inputs, swap, self)
+    }
+
+    pub fn public_inputs_hash<H: AlgebraicHasher<F>>(
+        &mut self,
+        inputs: Vec<Target>,
+    ) -> HashOutTarget {
+        H::public_inputs_hash(inputs, self)
     }
 }
