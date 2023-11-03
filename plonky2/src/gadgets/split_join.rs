@@ -55,7 +55,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SplitGenerator {
     integer: Target,
     bits: Vec<Target>,
