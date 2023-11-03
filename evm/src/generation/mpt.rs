@@ -40,10 +40,7 @@ pub(crate) fn all_mpt_prover_inputs(trie_inputs: &TrieInputs) -> Vec<U256> {
     let storage_tries_by_state_key = trie_inputs
         .storage_tries
         .iter()
-        .map(|(hashed_address, storage_trie)| {
-            let key = Nibbles::from_bytes_be(hashed_address.as_bytes()).unwrap();
-            (key, storage_trie)
-        })
+        .map(|(address, storage_trie)| (Nibbles::from(keccak(address)), storage_trie))
         .collect();
 
     mpt_prover_inputs_state_trie(

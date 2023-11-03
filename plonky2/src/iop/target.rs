@@ -1,14 +1,12 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use serde::{Deserialize, Serialize};
-
 use crate::iop::ext_target::ExtensionTarget;
 use crate::iop::wire::Wire;
 use crate::plonk::circuit_data::CircuitConfig;
 
 /// A location in the witness.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Target {
     Wire(Wire),
     /// A target that doesn't have any inherent location in the witness (but it can be copied to
@@ -17,12 +15,6 @@ pub enum Target {
     VirtualTarget {
         index: usize,
     },
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Self::VirtualTarget { index: 0 }
-    }
 }
 
 impl Target {
@@ -57,7 +49,7 @@ impl Target {
 }
 
 /// A `Target` which has already been constrained such that it can only be 0 or 1.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug)]
 #[allow(clippy::manual_non_exhaustive)]
 pub struct BoolTarget {
     pub target: Target,

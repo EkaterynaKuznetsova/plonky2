@@ -112,8 +112,8 @@ impl CircuitConfig {
     }
 }
 
-/// Circuit data required by the prover or the verifier.
 #[derive(Clone)]
+/// Circuit data required by the prover or the verifier.
 pub struct CircuitData<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize> {
     pub prover_only: ProverOnlyCircuitData<F, C, D>,
     pub verifier_only: VerifierOnlyCircuitData<C, D>,
@@ -237,8 +237,8 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
     }
 }
 
-/// Circuit data required by the prover, but not the verifier.
 #[derive(Clone)]
+/// Circuit data required by the prover, but not the verifier.
 pub struct ProverOnlyCircuitData<
     F: RichField + Extendable<D>,
     C: GenericConfig<D, F = F>,

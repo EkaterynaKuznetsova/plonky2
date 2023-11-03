@@ -20,7 +20,6 @@ use crate::iop::wire::Wire;
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
 use crate::plonk::vars::{EvaluationTargets, EvaluationVars, EvaluationVarsBase};
-use crate::alloc::string::ToString;
 
 /// Evaluates a full Poseidon permutation with 12 state elements.
 ///
