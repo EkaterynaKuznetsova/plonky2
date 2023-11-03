@@ -75,7 +75,7 @@ pub trait Field:
     const ONE: Self;
     const TWO: Self;
     const NEG_ONE: Self;
-    const MONTGOMERY_INV: Self;
+    //const MONTGOMERY_INV: Self;
 
     /// The 2-adicity of this field's multiplicative group.
     const TWO_ADICITY: usize;
@@ -84,7 +84,7 @@ pub trait Field:
     /// Set to `None` when the characteristic doesn't fit in a u64.
     const CHARACTERISTIC_TWO_ADICITY: usize;
 
-    const NONRESIDUE: Self;
+    //const NONRESIDUE: Self;
 
     /// Generator of the entire multiplicative group, i.e. all non-zero elements.
     const MULTIPLICATIVE_GROUP_GENERATOR: Self;
@@ -126,7 +126,7 @@ pub trait Field:
         *self * (Self::ONE + Self::TWO)
     }
 
-    fn mul_by_nonresidue(&self) -> Self;
+    //fn mul_by_nonresidue(&self) -> Self;
 
     /// Compute the multiplicative inverse of this field element.
     fn try_inverse(&self) -> Option<Self>;
