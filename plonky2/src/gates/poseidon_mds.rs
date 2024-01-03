@@ -14,11 +14,13 @@ use crate::hash::hash_types::RichField;
 use crate::hash::hashing::SPONGE_WIDTH;
 use crate::hash::poseidon::Poseidon;
 use crate::iop::ext_target::{ExtensionAlgebraTarget, ExtensionTarget};
-use crate::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator};
+use crate::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator, WitnessGeneratorRef};
 use crate::iop::target::Target;
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::plonk::vars::{EvaluationTargets, EvaluationVars, EvaluationVarsBase};
+use crate::util::serialization::{Buffer, IoResult, Read, Write};
 
 /// Poseidon MDS Gate
 #[derive(Debug, Default)]
@@ -117,6 +119,18 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> PoseidonMdsGate<F,
 impl<F: RichField + Extendable<D> + Poseidon, const D: usize> Gate<F, D> for PoseidonMdsGate<F, D> {
     fn id(&self) -> String {
         format!("{self:?}<WIDTH={SPONGE_WIDTH}>")
+    }
+
+    fn serialize(
+        &self,
+        _dst: &mut Vec<u8>,
+        _common_data: &CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        Ok(())
+    }
+
+    fn deserialize(_src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        Ok(PoseidonMdsGate::new())
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -226,9 +240,9 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> Gate<F, D> for Pos
             .collect()
     }
 
-    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
         let gen = PoseidonMdsGenerator::<D> { row };
-        vec![Box::new(gen.adapter())]
+        vec![WitnessGeneratorRef::new(gen.adapter())]
     }
 
     fn num_wires(&self) -> usize {
@@ -248,14 +262,19 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> Gate<F, D> for Pos
     }
 }
 
-#[derive(Clone, Debug)]
-struct PoseidonMdsGenerator<const D: usize> {
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PoseidonMdsGenerator<const D: usize> {
     row: usize,
 }
 
-impl<F: RichField + Extendable<D> + Poseidon, const D: usize> SimpleGenerator<F>
+impl<F: RichField + Extendable<D> + Poseidon, const D: usize> SimpleGenerator<F, D>
     for PoseidonMdsGenerator<D>
 {
+
+    fn id(&self) -> String {
+        "PoseidonMdsGenerator".to_string()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         (0..SPONGE_WIDTH)
             .flat_map(|i| {
@@ -283,6 +302,15 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> SimpleGenerator<F>
                 out,
             );
         }
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_usize(self.row)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let row = src.read_usize()?;
+        Ok(Self { row })
     }
 }
 

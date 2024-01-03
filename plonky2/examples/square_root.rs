@@ -7,8 +7,9 @@ use plonky2::iop::generator::{GeneratedValues, SimpleGenerator};
 use plonky2::iop::target::Target;
 use plonky2::iop::witness::{PartialWitness, PartitionWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
-use plonky2::plonk::circuit_data::CircuitConfig;
+use plonky2::plonk::circuit_data::{CircuitConfig, CommonCircuitData};
 use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
+use plonky2::util::serialization::{Buffer, IoResult};
 use plonky2_field::extension::Extendable;
 
 /// A generator used by the prover to calculate the square root (`x`) of a given value
@@ -20,9 +21,13 @@ struct SquareRootGenerator<F: RichField + Extendable<D>, const D: usize> {
     _phantom: PhantomData<F>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     for SquareRootGenerator<F, D>
 {
+    fn id(&self) -> String {
+        todo!()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         vec![self.x_squared]
     }
@@ -34,6 +39,14 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
         println!("Square root: {x}");
 
         out_buffer.set_target(self.x, x);
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 }
 

@@ -216,7 +216,7 @@ impl<F: RichField + Extendable<D>, const D: usize> PackedEvaluableBase<F, D> for
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SwitchGenerator<F: RichField + Extendable<D>, const D: usize> {
     row: usize,
     gate: SwitchGate<F, D>,

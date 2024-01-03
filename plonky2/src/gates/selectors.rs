@@ -1,6 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
+use serde::Serialize;
 
 use crate::field::extension::Extendable;
 use crate::field::polynomial::PolynomialValues;
@@ -10,7 +11,7 @@ use crate::hash::hash_types::RichField;
 /// Placeholder value to indicate that a gate doesn't use a selector polynomial.
 pub(crate) const UNUSED_SELECTOR: usize = u32::MAX as usize;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct SelectorsInfo {
     pub selector_indices: Vec<usize>,
     pub groups: Vec<Range<usize>>,

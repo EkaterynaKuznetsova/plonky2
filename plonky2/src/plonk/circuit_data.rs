@@ -1,27 +1,27 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{Range, RangeFrom};
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::field::extension::Extendable;
 use crate::field::fft::FftRootTable;
 use crate::field::types::Field;
+use crate::fri::{FriConfig, FriParams};
 use crate::fri::oracle::PolynomialBatch;
 use crate::fri::reduction_strategies::FriReductionStrategy;
 use crate::fri::structure::{
     FriBatchInfo, FriBatchInfoTarget, FriInstanceInfo, FriInstanceInfoTarget, FriOracleInfo,
     FriPolynomialInfo,
 };
-use crate::fri::{FriConfig, FriParams};
 use crate::gates::gate::GateRef;
 use crate::gates::selectors::SelectorsInfo;
 use crate::hash::hash_types::{HashOutTarget, MerkleCapTarget, RichField};
 use crate::hash::merkle_tree::MerkleCap;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::WitnessGenerator;
+use crate::iop::generator::WitnessGeneratorRef;
 use crate::iop::target::Target;
 use crate::iop::witness::PartialWitness;
 use crate::plonk::circuit_builder::CircuitBuilder;
@@ -30,9 +30,10 @@ use crate::plonk::plonk_common::PlonkOracle;
 use crate::plonk::proof::{CompressedProofWithPublicInputs, ProofWithPublicInputs};
 use crate::plonk::prover::prove;
 use crate::plonk::verifier::verify;
+use crate::util::serialization::{Buffer, GateSerializer, IoResult, Read, WitnessGeneratorSerializer, Write};
 use crate::util::timing::TimingTree;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CircuitConfig {
     pub num_wires: usize,
     pub num_routed_wires: usize,
@@ -123,6 +124,26 @@ pub struct CircuitData<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>,
 impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
     CircuitData<F, C, D>
 {
+
+    pub fn to_bytes(
+        &self,
+        gate_serializer: &dyn GateSerializer<F, D>,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+    ) -> IoResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.write_circuit_data(self, gate_serializer, generator_serializer)?;
+        Ok(buffer)
+    }
+
+    pub fn from_bytes(
+        bytes: &[u8],
+        gate_serializer: &dyn GateSerializer<F, D>,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+    ) -> IoResult<Self> {
+        let mut buffer = Buffer::new(bytes);
+        buffer.read_circuit_data(gate_serializer, generator_serializer)
+    }
+
     pub fn prove(&self, inputs: PartialWitness<F>) -> Result<ProofWithPublicInputs<F, C, D>> {
         prove(
             &self.prover_only,
@@ -209,6 +230,27 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
             &mut TimingTree::default(),
         )
     }
+
+    pub fn to_bytes(
+        &self,
+        gate_serializer: &dyn GateSerializer<F, D>,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+    ) -> IoResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.write_prover_circuit_data(self, gate_serializer, generator_serializer)?;
+        Ok(buffer)
+    }
+
+    pub fn from_bytes(
+        bytes: &[u8],
+        gate_serializer: &dyn GateSerializer<F, D>,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+    ) -> IoResult<Self> {
+        let mut buffer = Buffer::new(bytes);
+        buffer.read_prover_circuit_data(gate_serializer, generator_serializer)
+    }
+
+
 }
 
 /// Circuit data required by the prover.
@@ -235,6 +277,20 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
     ) -> Result<()> {
         compressed_proof_with_pis.verify(&self.verifier_only, &self.common)
     }
+
+    pub fn to_bytes(&self, gate_serializer: &dyn GateSerializer<F, D>) -> IoResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.write_verifier_circuit_data(self, gate_serializer)?;
+        Ok(buffer)
+    }
+
+    pub fn from_bytes(
+        bytes: Vec<u8>,
+        gate_serializer: &dyn GateSerializer<F, D>,
+    ) -> IoResult<Self> {
+        let mut buffer = Buffer::new(&bytes);
+        buffer.read_verifier_circuit_data(gate_serializer)
+    }
 }
 
 #[derive(Clone)]
@@ -244,7 +300,7 @@ pub struct ProverOnlyCircuitData<
     C: GenericConfig<D, F = F>,
     const D: usize,
 > {
-    pub generators: Vec<Box<dyn WitnessGenerator<F>>>,
+    pub generators: Vec<WitnessGeneratorRef<F, D>>,
     /// Generator indices (within the `Vec` above), indexed by the representative of each target
     /// they watch.
     pub generator_indices_by_watches: BTreeMap<usize, Vec<usize>>,
@@ -266,8 +322,31 @@ pub struct ProverOnlyCircuitData<
     pub circuit_digest: <<C as GenericConfig<D>>::Hasher as Hasher<F>>::Hash,
 }
 
+impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
+ProverOnlyCircuitData<F, C, D>
+{
+    pub fn to_bytes(
+        &self,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+        common_data: &CommonCircuitData<F, D>,
+    ) -> IoResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.write_prover_only_circuit_data(self, generator_serializer, common_data)?;
+        Ok(buffer)
+    }
+
+    pub fn from_bytes(
+        bytes: &[u8],
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+        common_data: &CommonCircuitData<F, D>,
+    ) -> IoResult<Self> {
+        let mut buffer = Buffer::new(bytes);
+        buffer.read_prover_only_circuit_data(generator_serializer, common_data)
+    }
+}
+
 /// Circuit data required by the verifier, but not the prover.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VerifierOnlyCircuitData<C: GenericConfig<D>, const D: usize> {
     /// A commitment to each constant polynomial and each permutation polynomial.
     pub constants_sigmas_cap: MerkleCap<C::F, C::Hasher>,
@@ -276,8 +355,21 @@ pub struct VerifierOnlyCircuitData<C: GenericConfig<D>, const D: usize> {
     pub circuit_digest: <<C as GenericConfig<D>>::Hasher as Hasher<C::F>>::Hash,
 }
 
+impl<C: GenericConfig<D>, const D: usize> VerifierOnlyCircuitData<C, D> {
+    pub fn to_bytes(&self) -> IoResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.write_verifier_only_circuit_data(self)?;
+        Ok(buffer)
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> IoResult<Self> {
+        let mut buffer = Buffer::new(&bytes);
+        buffer.read_verifier_only_circuit_data()
+    }
+}
+
 /// Circuit data required by both the prover and the verifier.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct CommonCircuitData<F: RichField + Extendable<D>, const D: usize> {
     pub config: CircuitConfig,
 
@@ -308,6 +400,20 @@ pub struct CommonCircuitData<F: RichField + Extendable<D>, const D: usize> {
 }
 
 impl<F: RichField + Extendable<D>, const D: usize> CommonCircuitData<F, D> {
+    pub fn to_bytes(&self, gate_serializer: &dyn GateSerializer<F, D>) -> IoResult<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.write_common_circuit_data(self, gate_serializer)?;
+        Ok(buffer)
+    }
+
+    pub fn from_bytes(
+        bytes: Vec<u8>,
+        gate_serializer: &dyn GateSerializer<F, D>,
+    ) -> IoResult<Self> {
+        let mut buffer = Buffer::new(&bytes);
+        buffer.read_common_circuit_data(gate_serializer)
+    }
+
     pub const fn degree_bits(&self) -> usize {
         self.fri_params.degree_bits
     }

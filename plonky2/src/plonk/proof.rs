@@ -116,7 +116,7 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
         bytes: Vec<u8>,
         common_data: &CommonCircuitData<F, D>,
     ) -> anyhow::Result<Self> {
-        let mut buffer = Buffer::new(bytes);
+        let mut buffer = Buffer::new(&bytes);
         let proof = buffer
             .read_proof_with_public_inputs(common_data)
             .map_err(anyhow::Error::msg)?;
@@ -246,7 +246,7 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
         bytes: Vec<u8>,
         common_data: &CommonCircuitData<F, D>,
     ) -> anyhow::Result<Self> {
-        let mut buffer = Buffer::new(bytes);
+        let mut buffer = Buffer::new(&bytes);
         let proof = buffer
             .read_compressed_proof_with_public_inputs(common_data)
             .map_err(anyhow::Error::msg)?;
@@ -289,7 +289,7 @@ pub struct ProofWithPublicInputsTarget<const D: usize> {
     pub public_inputs: Vec<Target>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Default)]
 /// The purported values of each polynomial at a single point.
 pub struct OpeningSet<F: RichField + Extendable<D>, const D: usize> {
     pub constants: Vec<F::Extension>,
@@ -355,7 +355,7 @@ impl<F: RichField + Extendable<D>, const D: usize> OpeningSet<F, D> {
 }
 
 /// The purported values of each polynomial at a single point.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct OpeningSetTarget<const D: usize> {
     pub constants: Vec<ExtensionTarget<D>>,
     pub plonk_sigmas: Vec<ExtensionTarget<D>>,

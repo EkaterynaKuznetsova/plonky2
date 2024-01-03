@@ -249,7 +249,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for InsertionGate<
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct InsertionGenerator<F: RichField + Extendable<D>, const D: usize> {
     row: usize,
     gate: InsertionGate<F, D>,

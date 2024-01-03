@@ -12,7 +12,9 @@ use crate::iop::generator::{GeneratedValues, SimpleGenerator};
 use crate::iop::target::Target;
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::util::bits_u64;
+use crate::util::serialization::{Buffer, IoResult, Read, Write};
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     pub fn arithmetic_extension(
@@ -493,16 +495,21 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct QuotientGeneratorExtension<const D: usize> {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct QuotientGeneratorExtension<const D: usize> {
     numerator: ExtensionTarget<D>,
     denominator: ExtensionTarget<D>,
     quotient: ExtensionTarget<D>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     for QuotientGeneratorExtension<D>
 {
+
+    fn id(&self) -> String {
+        "QuotientGeneratorExtension".to_string()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         let mut deps = self.numerator.to_target_array().to_vec();
         deps.extend(self.denominator.to_target_array());
@@ -514,6 +521,23 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
         let dem = witness.get_extension_target(self.denominator);
         let quotient = num / dem;
         out_buffer.set_extension_target(self.quotient, quotient)
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_target_ext(self.numerator)?;
+        dst.write_target_ext(self.denominator)?;
+        dst.write_target_ext(self.quotient)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let numerator = src.read_target_ext()?;
+        let denominator = src.read_target_ext()?;
+        let quotient = src.read_target_ext()?;
+        Ok(Self {
+            numerator,
+            denominator,
+            quotient,
+        })
     }
 }
 

@@ -9,14 +9,16 @@ use crate::gates::gate::Gate;
 use crate::gates::util::StridedConstraintConsumer;
 use crate::hash::hash_types::RichField;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator};
+use crate::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator, WitnessGeneratorRef};
 use crate::iop::target::Target;
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::plonk::vars::{EvaluationTargets, EvaluationVars, EvaluationVarsBase};
+use crate::util::serialization::{Buffer, IoResult, Read, Write};
 
 /// Computes `sum alpha^i c_i` for a vector `c_i` of `num_coeffs` elements of the extension field.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReducingExtensionGate<const D: usize> {
     pub num_coeffs: usize,
 }
@@ -61,6 +63,19 @@ impl<const D: usize> ReducingExtensionGate<D> {
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for ReducingExtensionGate<D> {
     fn id(&self) -> String {
         format!("{self:?}")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_usize(self.num_coeffs)?;
+        Ok(())
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+        where
+            Self: Sized,
+    {
+        let num_coeffs = src.read_usize()?;
+        Ok(Self::new(num_coeffs))
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -208,13 +223,13 @@ function re_wires_accs_start(i, num_coeffs) {{
             .collect()
     }
 
-    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
-        vec![Box::new(
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
+        vec![WitnessGeneratorRef::new(
             ReducingGenerator {
                 row,
                 gate: self.clone(),
             }
-            .adapter(),
+                .adapter(),
         )]
     }
 
@@ -235,13 +250,18 @@ function re_wires_accs_start(i, num_coeffs) {{
     }
 }
 
-#[derive(Debug, Clone)]
-struct ReducingGenerator<const D: usize> {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReducingGenerator<const D: usize> {
     row: usize,
     gate: ReducingExtensionGate<D>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F> for ReducingGenerator<D> {
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D> for ReducingGenerator<D> {
+
+    fn id(&self) -> String {
+        "ReducingExtensionGenerator".to_string()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         ReducingExtensionGate::<D>::wires_alpha()
             .chain(ReducingExtensionGate::<D>::wires_old_acc())
@@ -271,6 +291,17 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F> for Reduci
             out_buffer.set_extension_target(accs[i], computed_acc);
             acc = computed_acc;
         }
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_usize(self.row)?;
+        <ReducingExtensionGate<D> as Gate<F, D>>::serialize(&self.gate, dst, _common_data)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let row = src.read_usize()?;
+        let gate = <ReducingExtensionGate<D> as Gate<F, D>>::deserialize(src, _common_data)?;
+        Ok(Self { row, gate })
     }
 }
 

@@ -6,9 +6,11 @@ use crate::field::extension::Extendable;
 use crate::gates::gate::Gate;
 use crate::hash::hash_types::RichField;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::WitnessGenerator;
+use crate::iop::generator::{WitnessGenerator, WitnessGeneratorRef};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::plonk::vars::{EvaluationTargets, EvaluationVars, EvaluationVarsBaseBatch};
+use crate::util::serialization::{Buffer, IoResult};
 
 /// A gate which does nothing.
 pub struct NoopGate;
@@ -16,6 +18,18 @@ pub struct NoopGate;
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for NoopGate {
     fn id(&self) -> String {
         "NoopGate".into()
+    }
+
+    fn serialize(
+        &self,
+        _dst: &mut Vec<u8>,
+        _common_data: &CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        Ok(())
+    }
+
+    fn deserialize(_src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        Ok(Self)
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -41,7 +55,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for NoopGate {
         Vec::new()
     }
 
-    fn generators(&self, _row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
+    fn generators(&self, _row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
         Vec::new()
     }
 

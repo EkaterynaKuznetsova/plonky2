@@ -11,6 +11,8 @@ use crate::iop::generator::{GeneratedValues, SimpleGenerator};
 use crate::iop::target::{BoolTarget, Target};
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
+use crate::util::serialization::{Buffer, IoResult, Read, Write};
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     /// Computes `-x`.
@@ -364,15 +366,20 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct EqualityGenerator {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EqualityGenerator {
     x: Target,
     y: Target,
     equal: BoolTarget,
     inv: Target,
 }
 
-impl<F: RichField> SimpleGenerator<F> for EqualityGenerator {
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D> for EqualityGenerator  {
+
+    fn id(&self) -> String {
+        "EqualityGenerator".to_string()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         vec![self.x, self.y]
     }
@@ -385,6 +392,20 @@ impl<F: RichField> SimpleGenerator<F> for EqualityGenerator {
 
         out_buffer.set_bool_target(self.equal, x == y);
         out_buffer.set_target(self.inv, inv);
+    }
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_target(self.x)?;
+        dst.write_target(self.y)?;
+        dst.write_target_bool(self.equal)?;
+        dst.write_target(self.inv)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let x = src.read_target()?;
+        let y = src.read_target()?;
+        let equal = src.read_target_bool()?;
+        let inv = src.read_target()?;
+        Ok(Self { x, y, equal, inv })
     }
 }
 

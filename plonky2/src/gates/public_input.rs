@@ -10,12 +10,14 @@ use crate::gates::packed_util::PackedEvaluableBase;
 use crate::gates::util::StridedConstraintConsumer;
 use crate::hash::hash_types::RichField;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::WitnessGenerator;
+use crate::iop::generator::{WitnessGenerator, WitnessGeneratorRef};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::plonk::vars::{
     EvaluationTargets, EvaluationVars, EvaluationVarsBase, EvaluationVarsBaseBatch,
     EvaluationVarsBasePacked,
 };
+use crate::util::serialization::{Buffer, IoResult};
 
 /// A gate whose first four wires will be equal to a hash of public inputs.
 pub struct PublicInputGate;
@@ -29,6 +31,18 @@ impl PublicInputGate {
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for PublicInputGate {
     fn id(&self) -> String {
         "PublicInputGate".into()
+    }
+
+    fn serialize(
+        &self,
+        _dst: &mut Vec<u8>,
+        _common_data: &CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        Ok(())
+    }
+
+    fn deserialize(_src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        Ok(Self)
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -104,7 +118,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for PublicInputGat
             .collect()
     }
 
-    fn generators(&self, _row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
+    fn generators(&self, _row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
         Vec::new()
     }
 

@@ -7,6 +7,8 @@ use crate::iop::generator::{GeneratedValues, SimpleGenerator};
 use crate::iop::target::{BoolTarget, Target};
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
+use crate::util::serialization::{Buffer, IoResult, Read, Write};
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     /// Checks that `x < 2^n_log` using a `BaseSumGate`.
@@ -51,19 +53,22 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct LowHighGenerator {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LowHighGenerator {
     integer: Target,
     n_log: usize,
     low: Target,
     high: Target,
 }
 
-impl<F: RichField> SimpleGenerator<F> for LowHighGenerator {
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D> for LowHighGenerator {
+    fn id(&self) -> String {
+        "LowHighGenerator".to_string()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         vec![self.integer]
     }
-
     fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
         let integer_value = witness.get_target(self.integer).to_canonical_u64();
         let low = integer_value & ((1 << self.n_log) - 1);
@@ -71,5 +76,24 @@ impl<F: RichField> SimpleGenerator<F> for LowHighGenerator {
 
         out_buffer.set_target(self.low, F::from_canonical_u64(low));
         out_buffer.set_target(self.high, F::from_canonical_u64(high));
+    }
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_target(self.integer)?;
+        dst.write_usize(self.n_log)?;
+        dst.write_target(self.low)?;
+        dst.write_target(self.high)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let integer = src.read_target()?;
+        let n_log = src.read_usize()?;
+        let low = src.read_target()?;
+        let high = src.read_target()?;
+        Ok(Self {
+            integer,
+            n_log,
+            low,
+            high,
+        })
     }
 }

@@ -31,9 +31,7 @@ use crate::hash::hash_types::{HashOut, HashOutTarget, MerkleCapTarget, RichField
 use crate::hash::merkle_proofs::MerkleProofTarget;
 use crate::hash::merkle_tree::MerkleCap;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::{
-    ConstantGenerator, CopyGenerator, RandomValueGenerator, SimpleGenerator, WitnessGenerator,
-};
+use crate::iop::generator::{ConstantGenerator, CopyGenerator, RandomValueGenerator, SimpleGenerator, WitnessGenerator, WitnessGeneratorRef};
 use crate::iop::target::{BoolTarget, Target};
 use crate::iop::wire::Wire;
 use crate::plonk::circuit_data::{
@@ -76,7 +74,7 @@ pub struct CircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     context_log: ContextTree,
 
     /// Generators used to generate the witness.
-    generators: Vec<Box<dyn WitnessGenerator<F>>>,
+    generators: Vec<WitnessGeneratorRef<F, D>>,
 
     constants_to_targets: HashMap<F, Target>,
     targets_to_constants: HashMap<Target, F>,
@@ -362,15 +360,13 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         self.connect(x, one);
     }
 
-    pub fn add_generators(&mut self, generators: Vec<Box<dyn WitnessGenerator<F>>>) {
+    pub fn add_generators(&mut self, generators: Vec<WitnessGeneratorRef<F, D>>) {
         self.generators.extend(generators);
     }
 
-    pub fn add_simple_generator<G: SimpleGenerator<F> + std::clone::Clone>(
-        &mut self,
-        generator: G,
-    ) {
-        self.generators.push(Box::new(generator.adapter()));
+    pub fn add_simple_generator<G: SimpleGenerator<F, D> + std::clone::Clone>(&mut self, generator: G) {
+        self.generators
+            .push(WitnessGeneratorRef::new(generator.adapter()));
     }
 
     /// Returns a routable target with a value of 0.
@@ -859,7 +855,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         // Index generator indices by their watched targets.
         let mut generator_indices_by_watches = BTreeMap::new();
         for (i, generator) in self.generators.iter().enumerate() {
-            for watch in generator.watch_list() {
+            for watch in generator.0.watch_list() {
                 let watch_index = forest.target_index(watch);
                 let watch_rep_index = forest.parents[watch_index];
                 generator_indices_by_watches

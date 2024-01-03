@@ -12,21 +12,24 @@ use crate::field::polynomial::PolynomialCoeffs;
 use crate::field::types::Field;
 use crate::gadgets::polynomial::PolynomialCoeffsExtAlgebraTarget;
 use crate::gates::gate::Gate;
+use crate::gates::high_degree_interpolation::HighDegreeInterpolationGate;
 use crate::gates::interpolation::InterpolationGate;
 use crate::gates::util::StridedConstraintConsumer;
 use crate::hash::hash_types::RichField;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator};
+use crate::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator, WitnessGeneratorRef};
 use crate::iop::target::Target;
 use crate::iop::wire::Wire;
 use crate::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::plonk::vars::{EvaluationTargets, EvaluationVars, EvaluationVarsBase};
+use crate::util::serialization::{Buffer, IoResult, Read, Write};
 
 /// One of the instantiations of `InterpolationGate`: all constraints are degree <= 2.
 /// The lower degree is a tradeoff for more gates (`eval_unfiltered_recursively` for
 /// this version uses more gates than `LowDegreeInterpolationGate`).
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct LowDegreeInterpolationGate<F: RichField + Extendable<D>, const D: usize> {
     pub subgroup_bits: usize,
     _phantom: PhantomData<F>,
@@ -84,6 +87,18 @@ impl<F: RichField + Extendable<D>, const D: usize> LowDegreeInterpolationGate<F,
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for LowDegreeInterpolationGate<F, D> {
     fn id(&self) -> String {
         format!("{self:?}<D={D}>")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_usize(self.subgroup_bits)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let subgroup_bits = src.read_usize()?;
+        Ok(Self {
+            subgroup_bits,
+            _phantom: PhantomData,
+        })
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -481,13 +496,9 @@ function two_adic_subgroup(i) {{
         constraints
     }
 
-    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
-        let gen = InterpolationGenerator::<F, D> {
-            row,
-            gate: *self,
-            _phantom: PhantomData,
-        };
-        vec![Box::new(gen.adapter())]
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
+        let gen = InterpolationGenerator::<F, D>::new(row, self.clone());
+        vec![WitnessGeneratorRef::new(gen.adapter())]
     }
 
     fn num_wires(&self) -> usize {
@@ -510,16 +521,31 @@ function two_adic_subgroup(i) {{
     }
 }
 
-#[derive(Debug, Clone)]
-struct InterpolationGenerator<F: RichField + Extendable<D>, const D: usize> {
+#[derive(Debug, Clone, Default)]
+pub struct InterpolationGenerator<F: RichField + Extendable<D>, const D: usize> {
     row: usize,
     gate: LowDegreeInterpolationGate<F, D>,
     _phantom: PhantomData<F>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
+impl<F: RichField + Extendable<D>, const D: usize> InterpolationGenerator<F, D> {
+    fn new(row: usize, gate: LowDegreeInterpolationGate<F, D>) -> Self {
+        InterpolationGenerator {
+            row,
+            gate,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     for InterpolationGenerator<F, D>
 {
+
+    fn id(&self) -> String {
+        "InterpolationGenerator".to_string()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         let local_target = |column| {
             Target::Wire(Wire {
@@ -596,6 +622,16 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
         let evaluation_value = interpolant.eval(evaluation_point);
         let evaluation_value_wires = self.gate.wires_evaluation_value().map(local_wire);
         out_buffer.set_ext_wires(evaluation_value_wires, evaluation_value);
+    }
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_usize(self.row)?;
+        self.gate.serialize(dst, _common_data)
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
+        let row = src.read_usize()?;
+        let gate = LowDegreeInterpolationGate::deserialize(src, _common_data)?;
+        Ok(Self::new(row, gate))
     }
 }
 
