@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use plonky2::field::extension::Extendable;
 use plonky2::field::packed::PackedField;
 use plonky2::field::types::{Field, PrimeField64};
@@ -97,7 +98,8 @@ fn eval_bitop_32<F: Field, P: PackedField<Scalar = F>>(
 
     let a = binary_to_u32(a_bits);
     let b = binary_to_u32(b_bits);
-    let a_and_b = binary_to_u32(a_bits.zip(b_bits).map(|(b0, b1)| b0 * b1));
+    let c: [P; 32] = a_bits.into_iter().zip(b_bits).map(|(b0, b1)| b0 * b1).collect_vec().try_into().unwrap();
+    let a_and_b = binary_to_u32(c);
 
     let constraint = is_and * (a_and_b - output)
         + is_ior * (a + b - a_and_b - output)
@@ -173,9 +175,9 @@ fn eval_bitop_32_circuit<F: RichField + Extendable<D>, const D: usize>(
     let limb_base = builder.constant(F::TWO);
     let a = reduce_with_powers_ext_circuit(builder, &a_bits, limb_base);
     let b = reduce_with_powers_ext_circuit(builder, &b_bits, limb_base);
-    let a_and_b_bits = a_bits
+    let a_and_b_bits: [ExtensionTarget<D>; 32] = a_bits.into_iter()
         .zip(b_bits)
-        .map(|(b0, b1)| builder.mul_extension(b0, b1));
+        .map(|(b0, b1)| builder.mul_extension(b0, b1)).collect_vec().try_into().unwrap();
     let a_and_b = reduce_with_powers_ext_circuit(builder, &a_and_b_bits, limb_base);
 
     let and_constr = {

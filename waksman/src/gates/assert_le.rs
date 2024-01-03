@@ -5,16 +5,18 @@ use plonky2::gates::packed_util::PackedEvaluableBase;
 use plonky2::gates::util::StridedConstraintConsumer;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::ext_target::ExtensionTarget;
-use plonky2::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator};
+use plonky2::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator, WitnessGeneratorRef};
 use plonky2::iop::target::Target;
 use plonky2::iop::wire::Wire;
 use plonky2::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::plonk::circuit_data::CommonCircuitData;
 use plonky2::plonk::plonk_common::{reduce_with_powers, reduce_with_powers_ext_circuit};
 use plonky2::plonk::vars::{
     EvaluationTargets, EvaluationVars, EvaluationVarsBase, EvaluationVarsBaseBatch,
     EvaluationVarsBasePacked,
 };
+use plonky2::util::serialization::{Buffer, IoResult};
 use plonky2_field::extension::Extendable;
 use plonky2_field::packed::PackedField;
 use plonky2_field::types::{Field, Field64};
@@ -85,6 +87,14 @@ impl<F: RichField + Extendable<D>, const D: usize> AssertLessThanGate<F, D> {
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for AssertLessThanGate<F, D> {
     fn id(&self) -> String {
         format!("{self:?}<D={D}>")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -257,12 +267,11 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for AssertLessThan
         constraints
     }
 
-    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
-        let gen = AssertLessThanGenerator::<F, D> {
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
+        vec![WitnessGeneratorRef::new(AssertLessThanGenerator::<F, D> {
             row,
             gate: self.clone(),
-        };
-        vec![Box::new(gen.adapter())]
+        }.adapter())]
     }
 
     fn num_wires(&self) -> usize {
@@ -354,15 +363,19 @@ impl<F: RichField + Extendable<D>, const D: usize> PackedEvaluableBase<F, D>
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AssertLessThanGenerator<F: RichField + Extendable<D>, const D: usize> {
     row: usize,
     gate: AssertLessThanGate<F, D>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     for AssertLessThanGenerator<F, D>
 {
+    fn id(&self) -> String {
+        todo!()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         let local_target = |column| Target::wire(self.row, column);
 
@@ -448,6 +461,14 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
                 intermediate_values[i],
             );
         }
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 }
 

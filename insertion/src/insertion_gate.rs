@@ -11,12 +11,14 @@ use plonky2::gates::gate::Gate;
 use plonky2::gates::util::StridedConstraintConsumer;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::ext_target::ExtensionTarget;
-use plonky2::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator};
+use plonky2::iop::generator::{GeneratedValues, SimpleGenerator, WitnessGenerator, WitnessGeneratorRef};
 use plonky2::iop::target::Target;
 use plonky2::iop::wire::Wire;
 use plonky2::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::plonk::circuit_data::CommonCircuitData;
 use plonky2::plonk::vars::{EvaluationTargets, EvaluationVars, EvaluationVarsBase};
+use plonky2::util::serialization::{Buffer, IoResult};
 
 /// A gate for inserting a value into a list at a non-deterministic location.
 #[derive(Clone, Debug)]
@@ -80,6 +82,14 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for InsertionGate<
         format!("{self:?}<D={D}>")
     }
 
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
+    }
+
     fn export_circom_verification_code(&self) -> String {
         todo!()
     }
@@ -104,7 +114,6 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for InsertionGate<
             let difference = cur_index - insertion_index;
             let equality_dummy = vars.local_wires[self.wire_equality_dummy_for_round_r(r)];
             let insert_here = vars.local_wires[self.wire_insert_here_for_round_r(r)];
-
             // The two equality constraints.
             constraints.push(difference * equality_dummy - (F::Extension::ONE - insert_here));
             constraints.push(insert_here * difference);
@@ -224,12 +233,11 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for InsertionGate<
         constraints
     }
 
-    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
-        let gen = InsertionGenerator::<F, D> {
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
+        vec![WitnessGeneratorRef::new(InsertionGenerator::<F, D> {
             row,
             gate: self.clone(),
-        };
-        vec![Box::new(gen.adapter())]
+        }.adapter())]
     }
 
     fn num_wires(&self) -> usize {
@@ -255,7 +263,11 @@ struct InsertionGenerator<F: RichField + Extendable<D>, const D: usize> {
     gate: InsertionGate<F, D>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F> for InsertionGenerator<F, D> {
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D> for InsertionGenerator<F, D> {
+    fn id(&self) -> String {
+        todo!()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         let local_target = |column| Target::wire(self.row, column);
 
@@ -323,6 +335,14 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F> for Insert
             let insert_here_wire = local_wire(self.gate.wire_insert_here_for_round_r(i));
             out_buffer.set_wire(insert_here_wire, insert_here_vals[i]);
         }
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 }
 

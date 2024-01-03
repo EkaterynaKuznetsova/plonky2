@@ -6,16 +6,17 @@ use plonky2::gates::packed_util::PackedEvaluableBase;
 use plonky2::gates::util::StridedConstraintConsumer;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::ext_target::ExtensionTarget;
-use plonky2::iop::generator::{GeneratedValues, WitnessGenerator};
+use plonky2::iop::generator::{GeneratedValues, WitnessGenerator, WitnessGeneratorRef};
 use plonky2::iop::target::Target;
 use plonky2::iop::wire::Wire;
 use plonky2::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
-use plonky2::plonk::circuit_data::CircuitConfig;
+use plonky2::plonk::circuit_data::{CircuitConfig, CommonCircuitData};
 use plonky2::plonk::vars::{
     EvaluationTargets, EvaluationVars, EvaluationVarsBase, EvaluationVarsBaseBatch,
     EvaluationVarsBasePacked,
 };
+use plonky2::util::serialization::{Buffer, IoResult};
 use plonky2_field::extension::Extendable;
 use plonky2_field::packed::PackedField;
 use plonky2_field::types::Field;
@@ -75,6 +76,14 @@ impl<F: RichField + Extendable<D>, const D: usize> SwitchGate<F, D> {
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for SwitchGate<F, D> {
     fn id(&self) -> String {
         format!("{self:?}<D={D}>")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 
     fn export_circom_verification_code(&self) -> String {
@@ -161,15 +170,14 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for SwitchGate<F, 
         constraints
     }
 
-    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>> {
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
         (0..self.num_copies)
             .map(|c| {
-                let g: Box<dyn WitnessGenerator<F>> = Box::new(SwitchGenerator::<F, D> {
+                WitnessGeneratorRef::new((SwitchGenerator::<F, D> {
                     row,
                     gate: *self,
                     copy: c,
-                });
-                g
+                }))
             })
             .collect()
     }
@@ -310,7 +318,11 @@ impl<F: RichField + Extendable<D>, const D: usize> SwitchGenerator<F, D> {
     }
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> WitnessGenerator<F> for SwitchGenerator<F, D> {
+impl<F: RichField + Extendable<D>, const D: usize> WitnessGenerator<F, D> for SwitchGenerator<F, D> {
+    fn id(&self) -> String {
+        todo!()
+    }
+
     fn watch_list(&self) -> Vec<Target> {
         self.in_out_dependencies()
             .union(self.in_switch_dependencies())
@@ -326,6 +338,14 @@ impl<F: RichField + Extendable<D>, const D: usize> WitnessGenerator<F> for Switc
         } else {
             false
         }
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 }
 

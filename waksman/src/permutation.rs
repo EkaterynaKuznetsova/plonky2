@@ -8,6 +8,8 @@ use plonky2::iop::generator::{GeneratedValues, SimpleGenerator};
 use plonky2::iop::target::Target;
 use plonky2::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::plonk::circuit_data::CommonCircuitData;
+use plonky2::util::serialization::{Buffer, IoResult};
 
 use crate::bimap::bimap_from_lists;
 use crate::gates::switch::SwitchGate;
@@ -332,7 +334,7 @@ fn route<F: Field>(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PermutationGenerator<F: Field> {
     a: Vec<Vec<Target>>,
     b: Vec<Vec<Target>>,
@@ -341,7 +343,11 @@ struct PermutationGenerator<F: Field> {
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field> SimpleGenerator<F> for PermutationGenerator<F> {
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D> for PermutationGenerator<F> {
+    fn id(&self) -> String {
+        todo!()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         self.a.iter().chain(&self.b).flatten().cloned().collect()
     }
@@ -365,6 +371,14 @@ impl<F: Field> SimpleGenerator<F> for PermutationGenerator<F> {
             witness,
             out_buffer,
         );
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 }
 

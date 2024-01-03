@@ -8,6 +8,8 @@ use plonky2::iop::generator::{GeneratedValues, SimpleGenerator};
 use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::iop::witness::{PartitionWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::plonk::circuit_data::CommonCircuitData;
+use plonky2::util::serialization::{Buffer, IoResult};
 use plonky2_util::ceil_div_usize;
 
 use crate::gates::assert_le::AssertLessThanGate;
@@ -126,16 +128,20 @@ pub fn sort_memory_ops_circuit<F: RichField + Extendable<D>, const D: usize>(
     output_targets
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MemoryOpSortGenerator<F: RichField + Extendable<D>, const D: usize> {
     input_ops: Vec<MemoryOpTarget>,
     output_ops: Vec<MemoryOpTarget>,
     _phantom: PhantomData<F>,
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     for MemoryOpSortGenerator<F, D>
 {
+    fn id(&self) -> String {
+        todo!()
+    }
+
     fn dependencies(&self) -> Vec<Target> {
         self.input_ops
             .iter()
@@ -177,6 +183,14 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F>
             out_buffer.set_target(out_op.timestamp, op.timestamp);
             out_buffer.set_target(out_op.value, op.value);
         }
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        todo!()
+    }
+
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> where Self: Sized {
+        todo!()
     }
 }
 

@@ -37,27 +37,27 @@ pub(crate) fn all_mpt_prover_inputs_reversed(trie_inputs: &TrieInputs) -> Vec<U2
 pub(crate) fn all_mpt_prover_inputs(trie_inputs: &TrieInputs) -> Vec<U256> {
     let mut prover_inputs = vec![];
 
-    let storage_tries_by_state_key = trie_inputs
-        .storage_tries
-        .iter()
-        .map(|(address, storage_trie)| (Nibbles::from(keccak(address)), storage_trie))
-        .collect();
-
-    mpt_prover_inputs_state_trie(
-        &trie_inputs.state_trie,
-        empty_nibbles(),
-        &mut prover_inputs,
-        &storage_tries_by_state_key,
-    );
-
-    mpt_prover_inputs(&trie_inputs.transactions_trie, &mut prover_inputs, &|rlp| {
-        rlp::decode_list(rlp)
-    });
-
-    mpt_prover_inputs(&trie_inputs.receipts_trie, &mut prover_inputs, &|_rlp| {
-        // TODO: Decode receipt RLP.
-        vec![]
-    });
+    // let storage_tries_by_state_key = trie_inputs
+    //     .storage_tries
+    //     .iter()
+    //     .map(|(address, storage_trie)| (Nibbles::from(keccak(address)), storage_trie))
+    //     .collect();
+    //
+    // mpt_prover_inputs_state_trie(
+    //     &trie_inputs.state_trie,
+    //     empty_nibbles(),
+    //     &mut prover_inputs,
+    //     &storage_tries_by_state_key,
+    // );
+    //
+    // mpt_prover_inputs(&trie_inputs.transactions_trie, &mut prover_inputs, &|rlp| {
+    //     rlp::decode_list(rlp)
+    // });
+    //
+    // mpt_prover_inputs(&trie_inputs.receipts_trie, &mut prover_inputs, &|_rlp| {
+    //     // TODO: Decode receipt RLP.
+    //     vec![]
+    // });
 
     prover_inputs
 }
