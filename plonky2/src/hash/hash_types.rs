@@ -14,11 +14,23 @@ pub trait RichField: PrimeField64 + Poseidon {}
 
 impl RichField for GoldilocksField {}
 
+pub const NUM_HASH_OUT_ELTS: usize = 4;
+
 /// Represents a ~256 bit hash output.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize)]
 #[serde(bound = "")]
 pub struct HashOut<F: Field> {
     pub elements: [F; 4],
+}
+
+impl<F: Field> Serialize for HashOut<F> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value: Vec<String> = self.elements.iter().map(|x| x.to_string()).collect();
+        serializer.serialize_str(&value.concat())
+    }
 }
 
 impl<F: Field> HashOut<F> {
@@ -110,9 +122,9 @@ impl<F: Field> Default for HashOut<F> {
 }
 
 /// Represents a ~256 bit hash output.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HashOutTarget {
-    pub elements: [Target; 4],
+    pub elements: [Target; NUM_HASH_OUT_ELTS],
 }
 
 impl HashOutTarget {
@@ -148,7 +160,7 @@ impl TryFrom<&[Target]> for HashOutTarget {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MerkleCapTarget(pub Vec<HashOutTarget>);
 
 /// Hash consisting of a byte array.

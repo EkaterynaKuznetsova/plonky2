@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
@@ -91,110 +91,6 @@ impl<F: RichField + Extendable<D>, const D: usize> U32ArithmeticGate<F, D> {
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for U32ArithmeticGate<F, D> {
     fn id(&self) -> String {
         format!("{self:?}")
-    }
-
-    fn export_circom_verification_code(&self) -> String {
-        let mut template_str = format!(
-            "template U32ArithmeticGate$NUM_OPS() {{
-   signal input constants[NUM_OPENINGS_CONSTANTS()][2];
-   signal input wires[NUM_OPENINGS_WIRES()][2];
-   signal input public_input_hash[4];
-   signal input constraints[NUM_GATE_CONSTRAINTS()][2];
-   signal output out[NUM_GATE_CONSTRAINTS()][2];
-
-   signal filter[2];
-   $SET_FILTER;
-
-   var index = 0; 
-   var max_u32 = 0xFFFFFFFF;
-   var base = 1 << 32;
-   signal computed_output;
-   signal combined_output;
-
-   var midpoint = $NUM_LIMBS / 2;
-   var base2 = 1 << $LIMB_BITS;  
-   var max_limb = 1 << $LIMB_BITS;  
-   var max_limb = 4;
-   signal this_limb[$NUM_LIMBS];
-   signal product[max_limb];
-   signal combined_low_limbs;
-   signal combined_high_limbs;
-
-   for (var i = 0; i < $NUM_OPS; i++) {{
-      computed_output <== GlExtAdd()(GlExtMul()(wires[6 * i], wires[6 * i + 1]), wires[6 * i + 2]);
-      combined_output <== GlExtAdd()(GlExtMul()(wires[6 * i + 4], GlExt()(base, 0)), wires[6 * i + 3]);
-	  out[index] <== ConstraintPush()(constraints[index], filter, GlExtMul()(GlExtSub()(GlExtMul()(wires[6 * i + 5], GlExtSub()(GlExt()(max_u32, 0),  wires[6 * i + 4])), GlExt()(1, 0)), wires[6 * i + 3]));
-	  index++;
-	  out[index] <== ConstraintPush()(constraints[index], filter, GlExtSub()(combined_output, computed_output));
-	  index++;
-	
-	  for(var j = $NUM_LIMBS - 1; j >= 0; j--) {{
-          this_limb[j] <== wires[6 * $NUM_OPS + $NUM_LIMBS * i + j];
-		  for(var x = 0; x < max_limb; x++) {{
-            product[x] <== GlExtSub()(this_limb[j], GlExt()(x, 0));
-          }}
-		  out[index] <== ConstraintPush()(constraints[index], filter, GlExtMul()(GlExtMul()(product[0], product[1]), GlExtMul()(product[2], product[3])));
-		  index++;
-		  if (j < midpoint) combined_low_limbs <== GlExtAdd()(GlExtMul()(GlExt()(base2, 0), GlExt()(0, 0)), this_limb[j]);
-		  else combined_high_limbs <== GlExtAdd()(GlExtMul()(GlExt()(base2, 0), GlExt()(0, 0)), this_limb[j]);
-      }}
-	
-	  out[index] <== ConstraintPush()(constraints[index], filter, GlExtSub()(combined_low_limbs, wires[6 * i + 3]));
-	  index++;
-	  out[index] <== ConstraintPush()(constraints[index], filter, GlExtSub()(combined_high_limbs, wires[6 * i + 4]));
-	  index++;
-   }}
-   for (var i = $NUM_OPS; i < NUM_GATE_CONSTRAINTS(); i++) {{
-    out[i] <== constraints[i];
-   }}
-}}"
-        ).to_string();
-        template_str = template_str.replace("$NUM_OPS", &*self.num_ops.to_string());
-        template_str = template_str.replace("$NUM_LIMBS", &Self::num_limbs().to_string());
-        template_str = template_str.replace("$LIMB_BITS", &Self::limb_bits().to_string());
-        template_str
-    }
-    fn export_solidity_verification_code(&self) -> String {
-        let mut template_str = format!(
-            "library ArithmeticU32$NUM_OPSLib {{
-    using GoldilocksExtLib for uint64[2];
-    function set_filter(GatesUtilsLib.EvaluationVars memory ev) internal pure {{
-        $SET_FILTER;
-    }}
-    function eval(GatesUtilsLib.EvaluationVars memory ev, uint64[2][$NUM_GATE_CONSTRAINTS] memory constraints) internal pure {{
-        uint32 index = 0;
-        for (uint32 i = 0; i < $NUM_OPS; i++) {{
-            GatesUtilsLib.push(constraints, ev.filter, index, ev.wires[6 * i + 5].mul(GatesUtilsLib.field_ext_from(0xFFFFFFFF, 0).sub(ev.wires[6 * i + 4])).sub(GatesUtilsLib.field_ext_from(1, 0)).mul(ev.wires[6 * i + 3]));
-            index++;
-            GatesUtilsLib.push(constraints, ev.filter, index, ev.wires[6 * i + 4].mul(GatesUtilsLib.field_ext_from(0x100000000, 0)).add(ev.wires[6 * i + 3]).sub(ev.wires[6 * i].mul(ev.wires[6 * i + 1]).add(ev.wires[6 * i + 2])));
-            index++;
-            uint64[2] memory combined_low_limbs;
-            uint64[2] memory combined_high_limbs;
-            for (uint32 j = 32; j > 0; j--) {{
-                uint64[2] memory this_limb = ev.wires[6 * $NUM_OPS + 32 * i + j - 1];
-                uint64[2] memory product = this_limb;
-                for (uint32 k = 1; k < 4; k++) {{
-                    product = product.mul(this_limb.sub(GatesUtilsLib.field_ext_from(k, 0)));
-                }}
-                GatesUtilsLib.push(constraints, ev.filter, index, product);
-                index++;
-                if (j - 1 < 16) {{
-                    combined_low_limbs = GatesUtilsLib.field_ext_from(4, 0).mul(combined_low_limbs).add(this_limb);
-                }} else {{
-                    combined_high_limbs = GatesUtilsLib.field_ext_from(4, 0).mul(combined_high_limbs).add(this_limb);
-                }}
-            }}
-            GatesUtilsLib.push(constraints, ev.filter, index, combined_low_limbs.sub(ev.wires[6 * i + 3]));
-            index++;
-            GatesUtilsLib.push(constraints, ev.filter, index, combined_high_limbs.sub(ev.wires[6 * i + 4]));
-            index++;
-        }}
-    }}
-}}"
-        )
-            .to_string();
-        template_str = template_str.replace("$NUM_OPS", &*self.num_ops.to_string());
-        template_str
     }
 
     fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension> {

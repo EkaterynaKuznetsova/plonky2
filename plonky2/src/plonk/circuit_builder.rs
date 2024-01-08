@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -32,7 +31,7 @@ use crate::hash::merkle_proofs::MerkleProofTarget;
 use crate::hash::merkle_tree::MerkleCap;
 use crate::iop::ext_target::ExtensionTarget;
 use crate::iop::generator::{
-    ConstantGenerator, CopyGenerator, RandomValueGenerator, SimpleGenerator, WitnessGenerator,
+    ConstantGenerator, CopyGenerator, RandomValueGenerator, SimpleGenerator, WitnessGeneratorRef,
 };
 use crate::iop::target::{BoolTarget, Target};
 use crate::iop::wire::Wire;
@@ -76,7 +75,7 @@ pub struct CircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     context_log: ContextTree,
 
     /// Generators used to generate the witness.
-    generators: Vec<Box<dyn WitnessGenerator<F>>>,
+    generators: Vec<WitnessGeneratorRef<F, D>>,
 
     constants_to_targets: HashMap<F, Target>,
     targets_to_constants: HashMap<Target, F>,
@@ -245,6 +244,19 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         t
     }
 
+    pub fn add_virtual_public_input_arr<const N: usize>(&mut self) -> [Target; N] {
+        let ts = [0; N].map(|_| self.add_virtual_target());
+        self.register_public_inputs(&ts);
+        ts
+    }
+
+    pub fn add_virtual_verifier_data(&mut self, cap_height: usize) -> VerifierCircuitTarget {
+        VerifierCircuitTarget {
+            constants_sigmas_cap: self.add_virtual_cap(cap_height),
+            circuit_digest: self.add_virtual_hash(),
+        }
+    }
+
     /// Add a virtual verifier data, register it as a public input and set it to `self.verifier_data_public_input`.
     /// WARNING: Do not register any public input after calling this! TODO: relax this
     pub fn add_verifier_data_public_inputs(&mut self) -> VerifierCircuitTarget {
@@ -253,10 +265,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             "add_verifier_data_public_inputs only needs to be called once"
         );
 
-        let verifier_data = VerifierCircuitTarget {
-            constants_sigmas_cap: self.add_virtual_cap(self.config.fri_config.cap_height),
-            circuit_digest: self.add_virtual_hash(),
-        };
+        let verifier_data = self.add_virtual_verifier_data(self.config.fri_config.cap_height);
         // The verifier data are public inputs.
         self.register_public_inputs(&verifier_data.circuit_digest.elements);
         for i in 0..self.config.fri_config.num_cap_elements() {
@@ -362,15 +371,13 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         self.connect(x, one);
     }
 
-    pub fn add_generators(&mut self, generators: Vec<Box<dyn WitnessGenerator<F>>>) {
+    pub fn add_generators(&mut self, generators: Vec<WitnessGeneratorRef<F, D>>) {
         self.generators.extend(generators);
     }
 
-    pub fn add_simple_generator<G: SimpleGenerator<F> + std::clone::Clone>(
-        &mut self,
-        generator: G,
-    ) {
-        self.generators.push(Box::new(generator.adapter()));
+    pub fn add_simple_generator<G: SimpleGenerator<F, D>>(&mut self, generator: G) {
+        self.generators
+            .push(WitnessGeneratorRef::new(generator.adapter()));
     }
 
     /// Returns a routable target with a value of 0.
@@ -747,7 +754,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         // those hash wires match the claimed public inputs.
         let num_public_inputs = self.public_inputs.len();
         let public_inputs_hash =
-            self.public_inputs_hash::<C::InnerHasher>(self.public_inputs.clone());
+            self.hash_n_to_hash_no_pad::<C::InnerHasher>(self.public_inputs.clone());
         let pi_gate = self.add_gate(PublicInputGate, vec![]);
         for (&hash_part, wire) in public_inputs_hash
             .elements
@@ -787,13 +794,13 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             self.add_simple_generator(const_gen);
         }
 
-        info!(
+        debug!(
             "Degree before blinding & padding: {}",
             self.gate_instances.len()
         );
         self.blind_and_pad();
         let degree = self.gate_instances.len();
-        info!("Degree after blinding & padding: {}", degree);
+        debug!("Degree after blinding & padding: {}", degree);
         let degree_bits = log2_strict(degree);
         let fri_params = self.fri_params(degree_bits);
         assert!(
@@ -859,7 +866,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         // Index generator indices by their watched targets.
         let mut generator_indices_by_watches = BTreeMap::new();
         for (i, generator) in self.generators.iter().enumerate() {
-            for watch in generator.watch_list() {
+            for watch in generator.0.watch_list() {
                 let watch_index = forest.target_index(watch);
                 let watch_rep_index = forest.parents[watch_index];
                 generator_indices_by_watches

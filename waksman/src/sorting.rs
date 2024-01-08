@@ -126,7 +126,7 @@ pub fn sort_memory_ops_circuit<F: RichField + Extendable<D>, const D: usize>(
     output_targets
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct MemoryOpSortGenerator<F: RichField + Extendable<D>, const D: usize> {
     input_ops: Vec<MemoryOpTarget>,
     output_ops: Vec<MemoryOpTarget>,

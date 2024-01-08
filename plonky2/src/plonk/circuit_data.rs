@@ -1,10 +1,10 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{Range, RangeFrom};
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::field::extension::Extendable;
 use crate::field::fft::FftRootTable;
@@ -21,7 +21,7 @@ use crate::gates::selectors::SelectorsInfo;
 use crate::hash::hash_types::{HashOutTarget, MerkleCapTarget, RichField};
 use crate::hash::merkle_tree::MerkleCap;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::WitnessGenerator;
+use crate::iop::generator::WitnessGeneratorRef;
 use crate::iop::target::Target;
 use crate::iop::witness::PartialWitness;
 use crate::plonk::circuit_builder::CircuitBuilder;
@@ -32,7 +32,7 @@ use crate::plonk::prover::prove;
 use crate::plonk::verifier::verify;
 use crate::util::timing::TimingTree;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CircuitConfig {
     pub num_wires: usize,
     pub num_routed_wires: usize,
@@ -90,13 +90,6 @@ impl CircuitConfig {
         }
     }
 
-    pub fn pairing_config() -> Self {
-        Self {
-            num_wires: 338,
-            ..Self::standard_recursion_config()
-        }
-    }
-
     pub fn wide_ecc_config() -> Self {
         Self {
             num_wires: 234,
@@ -112,8 +105,8 @@ impl CircuitConfig {
     }
 }
 
-#[derive(Clone)]
 /// Circuit data required by the prover or the verifier.
+#[derive(Eq, PartialEq, Debug)]
 pub struct CircuitData<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize> {
     pub prover_only: ProverOnlyCircuitData<F, C, D>,
     pub verifier_only: VerifierOnlyCircuitData<C, D>,
@@ -157,15 +150,15 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
         proof.decompress(&self.verifier_only.circuit_digest, &self.common)
     }
 
-    pub fn verifier_data(self) -> VerifierCircuitData<F, C, D> {
+    pub fn verifier_data(&self) -> VerifierCircuitData<F, C, D> {
         let CircuitData {
             verifier_only,
             common,
             ..
         } = self;
         VerifierCircuitData {
-            verifier_only,
-            common,
+            verifier_only: verifier_only.clone(),
+            common: common.clone(),
         }
     }
 
@@ -237,14 +230,14 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
     }
 }
 
-#[derive(Clone)]
 /// Circuit data required by the prover, but not the verifier.
+#[derive(Eq, PartialEq, Debug)]
 pub struct ProverOnlyCircuitData<
     F: RichField + Extendable<D>,
     C: GenericConfig<D, F = F>,
     const D: usize,
 > {
-    pub generators: Vec<Box<dyn WitnessGenerator<F>>>,
+    pub generators: Vec<WitnessGeneratorRef<F, D>>,
     /// Generator indices (within the `Vec` above), indexed by the representative of each target
     /// they watch.
     pub generator_indices_by_watches: BTreeMap<usize, Vec<usize>>,
@@ -267,7 +260,7 @@ pub struct ProverOnlyCircuitData<
 }
 
 /// Circuit data required by the verifier, but not the prover.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct VerifierOnlyCircuitData<C: GenericConfig<D>, const D: usize> {
     /// A commitment to each constant polynomial and each permutation polynomial.
     pub constants_sigmas_cap: MerkleCap<C::F, C::Hasher>,
@@ -277,7 +270,7 @@ pub struct VerifierOnlyCircuitData<C: GenericConfig<D>, const D: usize> {
 }
 
 /// Circuit data required by both the prover and the verifier.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct CommonCircuitData<F: RichField + Extendable<D>, const D: usize> {
     pub config: CircuitConfig,
 
@@ -479,7 +472,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CommonCircuitData<F, D> {
 /// is intentionally missing certain fields, such as `CircuitConfig`, because we support only a
 /// limited form of dynamic inner circuits. We can't practically make things like the wire count
 /// dynamic, at least not without setting a maximum wire count and paying for the worst case.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifierCircuitTarget {
     /// A commitment to each constant polynomial and each permutation polynomial.
     pub constants_sigmas_cap: MerkleCapTarget,

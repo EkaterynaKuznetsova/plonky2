@@ -23,8 +23,16 @@ type F = GoldilocksField;
 /// Halt interpreter execution whenever a jump to this offset is done.
 const DEFAULT_HALT_OFFSET: usize = 0xdeadbeef;
 
+/// Order of the BN254 base field.
+const BN_BASE: U256 = U256([
+    4332616871279656263,
+    10917124144477883021,
+    13281191951274694749,
+    3486998266802970665,
+]);
+
 impl MemoryState {
-    fn mload_general(&self, context: usize, segment: Segment, offset: usize) -> U256 {
+    pub(crate) fn mload_general(&self, context: usize, segment: Segment, offset: usize) -> U256 {
         self.get(MemoryAddress::new(context, segment, offset))
     }
 
@@ -55,6 +63,32 @@ pub fn run_interpreter(
         initial_stack,
         &KERNEL.prover_inputs,
     )
+}
+
+pub struct InterpreterMemoryInitialization {
+    pub label: String,
+    pub stack: Vec<U256>,
+    pub segment: Segment,
+    pub memory: Vec<(usize, Vec<U256>)>,
+}
+
+pub fn run_interpreter_with_memory(
+    memory_init: InterpreterMemoryInitialization,
+) -> anyhow::Result<Interpreter<'static>> {
+    let label = KERNEL.global_labels[&memory_init.label];
+    let mut stack = memory_init.stack;
+    stack.reverse();
+    let mut interpreter = Interpreter::new_with_kernel(label, stack);
+    for (pointer, data) in memory_init.memory {
+        for (i, term) in data.iter().enumerate() {
+            interpreter.generation_state.memory.set(
+                MemoryAddress::new(0, memory_init.segment, pointer + i),
+                *term,
+            )
+        }
+    }
+    interpreter.run()?;
+    Ok(interpreter)
 }
 
 pub fn run<'a>(
@@ -112,6 +146,7 @@ impl<'a> Interpreter<'a> {
                 println!("{}: {}", get_mnemonic(i as u8), self.opcode_count[i])
             }
         }
+        println!("Total: {}", self.opcode_count.into_iter().sum::<usize>());
         Ok(())
     }
 
@@ -377,25 +412,24 @@ impl<'a> Interpreter<'a> {
         self.push(x.overflowing_sub(y).0);
     }
 
-    // TODO: 107 is hardcoded as a dummy prime for testing
-    // should be changed to the proper implementation prime
-
     fn run_addfp254(&mut self) {
-        let x = self.pop();
-        let y = self.pop();
-        self.push((x + y) % 107);
+        let x = self.pop() % BN_BASE;
+        let y = self.pop() % BN_BASE;
+        // BN_BASE is 254-bit so addition can't overflow
+        self.push((x + y) % BN_BASE);
     }
 
     fn run_mulfp254(&mut self) {
         let x = self.pop();
         let y = self.pop();
-        self.push(U256::try_from(x.full_mul(y) % 107).unwrap());
+        self.push(U256::try_from(x.full_mul(y) % BN_BASE).unwrap());
     }
 
     fn run_subfp254(&mut self) {
-        let x = self.pop();
-        let y = self.pop();
-        self.push((U256::from(107) + x - y) % 107);
+        let x = self.pop() % BN_BASE;
+        let y = self.pop() % BN_BASE;
+        // BN_BASE is 254-bit so addition can't overflow
+        self.push((x + (BN_BASE - y)) % BN_BASE);
     }
 
     fn run_div(&mut self) {

@@ -3,7 +3,7 @@ use alloc::{format, vec};
 use core::mem::swap;
 
 use anyhow::{ensure, Result};
-use maybe_rayon::*;
+use plonky2_maybe_rayon::*;
 
 use crate::field::extension::Extendable;
 use crate::field::polynomial::{PolynomialCoeffs, PolynomialValues};
@@ -43,7 +43,7 @@ pub fn prove<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: 
     );
 
     let public_inputs = partition_witness.get_targets(&prover_data.public_inputs);
-    let public_inputs_hash = C::InnerHasher::hash_public_inputs(&public_inputs);
+    let public_inputs_hash = C::InnerHasher::hash_no_pad(&public_inputs);
 
     let witness = timed!(
         timing,
@@ -420,7 +420,7 @@ fn compute_quotient_polys<
                 public_inputs_hash,
             );
 
-            let mut quotient_values_batch = eval_vanishing_poly_base_batch::<F, C, D>(
+            let mut quotient_values_batch = eval_vanishing_poly_base_batch::<F, D>(
                 common_data,
                 &indices_batch,
                 &shifted_xs_batch,

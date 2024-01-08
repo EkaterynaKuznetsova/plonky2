@@ -88,12 +88,9 @@ impl Field for Secp256K1Scalar {
         0xFFFFFFFFFFFFFFFE,
         0xFFFFFFFFFFFFFFFF,
     ]);
-    //const MONTGOMERY_INV: Self = todo!();
 
     const TWO_ADICITY: usize = 6;
     const CHARACTERISTIC_TWO_ADICITY: usize = Self::TWO_ADICITY;
-
-    //const NONRESIDUE: Self = todo!();
 
     // Sage: `g = GF(p).multiplicative_generator()`
     const MULTIPLICATIVE_GROUP_GENERATOR: Self = Self([7, 0, 0, 0]);
@@ -118,10 +115,6 @@ impl Field for Secp256K1Scalar {
     fn characteristic() -> BigUint {
         Self::order()
     }
-
-    /*fn mul_by_nonresidue(&self) -> Self {
-        todo!()
-    }*/
 
     fn try_inverse(&self) -> Option<Self> {
         if self.is_zero() {

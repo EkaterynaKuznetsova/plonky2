@@ -63,10 +63,47 @@ const HASH_CONSTANTS: [(&str, [u8; 32]); 2] = [
     ),
 ];
 
-const EC_CONSTANTS: [(&str, [u8; 32]); 3] = [
+const EC_CONSTANTS: [(&str, [u8; 32]); 18] = [
+    (
+        "U256_MAX",
+        hex!("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+    ),
     (
         "BN_BASE",
         hex!("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47"),
+    ),
+    (
+        "BN_SCALAR",
+        hex!("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001"),
+    ),
+    (
+        "BN_GLV_BETA",
+        hex!("000000000000000059e26bcea0d48bacd4f263f1acdb5c4f5763473177fffffe"),
+    ),
+    (
+        "BN_GLV_S",
+        hex!("0000000000000000b3c4d79d41a917585bfc41088d8daaa78b17ea66b99c90dd"),
+    ),
+    (
+        "BN_GLV_MINUS_G1",
+        hex!("000000000000000000000000000000024ccef014a773d2cf7a7bd9d4391eb18d"),
+    ),
+    (
+        "BN_GLV_G2",
+        hex!("000000000000000000000000000000000000000000000002d91d232ec7e0b3d7"),
+    ),
+    (
+        "BN_GLV_B1",
+        hex!("30644e72e131a029b85045b68181585cb8e665ff8b011694c1d039a872b0eed9"),
+    ),
+    (
+        "BN_GLV_B2",
+        hex!("00000000000000000000000000000000000000000000000089d3256894d213e3"),
+    ),
+    (
+        "BN_BNEG_LOC",
+        // This just needs to be large enough to not interfere with anything else in SEGMENT_KERNEL_BN_TABLE_Q.
+        hex!("0000000000000000000000000000000000000000000000000000000000001337"),
     ),
     (
         "SECP_BASE",
@@ -75,6 +112,30 @@ const EC_CONSTANTS: [(&str, [u8; 32]); 3] = [
     (
         "SECP_SCALAR",
         hex!("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
+    ),
+    (
+        "SECP_GLV_BETA",
+        hex!("7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee"),
+    ),
+    (
+        "SECP_GLV_S",
+        hex!("5363ad4cc05c30e0a5261c028812645a122e22ea20816678df02967c1b23bd72"),
+    ),
+    (
+        "SECP_GLV_MINUS_G1",
+        hex!("00000000000000000000000000000000e4437ed6010e88286f547fa90abfe4c4"),
+    ),
+    (
+        "SECP_GLV_G2",
+        hex!("000000000000000000000000000000003086d221a7d46bcde86c90e49284eb15"),
+    ),
+    (
+        "SECP_GLV_B1",
+        hex!("fffffffffffffffffffffffffffffffdd66b5e10ae3a1813507ddee3c5765c7e"),
+    ),
+    (
+        "SECP_GLV_B2",
+        hex!("000000000000000000000000000000003086d221a7d46bcde86c90e49284eb15"),
     ),
 ];
 

@@ -1,14 +1,12 @@
 mod account_code;
 mod balance;
 mod core;
-mod curve_ops;
-mod ecrecover;
+mod ecc;
 mod exp;
 mod fields;
 mod hash;
 mod mpt;
 mod packing;
-mod ripemd;
 mod rlp;
 mod transaction_parsing;
 

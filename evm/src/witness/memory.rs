@@ -94,13 +94,13 @@ impl MemoryOp {
         }
     }
 
-    pub(crate) fn new_dummy_read(address: MemoryAddress, timestamp: usize) -> Self {
+    pub(crate) fn new_dummy_read(address: MemoryAddress, timestamp: usize, value: U256) -> Self {
         Self {
             filter: false,
             timestamp,
             address,
             kind: MemoryOpKind::Read,
-            value: U256::zero(),
+            value,
         }
     }
 
@@ -142,6 +142,10 @@ impl MemoryState {
     }
 
     pub fn get(&self, address: MemoryAddress) -> U256 {
+        if address.context >= self.contexts.len() {
+            return U256::zero();
+        }
+
         let segment = Segment::all()[address.segment];
         let val = self.contexts[address.context].segments[address.segment].get(address.virt);
         assert!(
@@ -155,6 +159,10 @@ impl MemoryState {
     }
 
     pub fn set(&mut self, address: MemoryAddress, val: U256) {
+        while address.context >= self.contexts.len() {
+            self.contexts.push(MemoryContextState::default());
+        }
+
         let segment = Segment::all()[address.segment];
         assert!(
             val.bits() <= segment.bit_range(),

@@ -72,12 +72,9 @@ impl Field for GoldilocksField {
     const ONE: Self = Self(1);
     const TWO: Self = Self(2);
     const NEG_ONE: Self = Self(Self::ORDER - 1);
-    //const MONTGOMERY_INV: Self = todo!();
 
     const TWO_ADICITY: usize = 32;
     const CHARACTERISTIC_TWO_ADICITY: usize = Self::TWO_ADICITY;
-
-    //const NONRESIDUE: Self = todo!();
 
     // Sage: `g = GF(p).multiplicative_generator()`
     const MULTIPLICATIVE_GROUP_GENERATOR: Self = Self(7);
@@ -97,10 +94,6 @@ impl Field for GoldilocksField {
     fn characteristic() -> BigUint {
         Self::order()
     }
-
-    /*fn mul_by_nonresidue(&self) -> Self {
-        todo!()
-    }*/
 
     #[inline(always)]
     fn try_inverse(&self) -> Option<Self> {

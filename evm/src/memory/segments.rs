@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub(crate) enum Segment {
+pub enum Segment {
     /// Contains EVM bytecode.
     Code = 0,
     /// The program stack.
@@ -39,10 +39,14 @@ pub(crate) enum Segment {
     /// instructions; initialised by `kernel/asm/shift.asm::init_shift_table()`.
     ShiftTable = 16,
     JumpdestBits = 17,
+    EcdsaTable = 18,
+    BnWnafA = 19,
+    BnWnafB = 20,
+    BnTableQ = 21,
 }
 
 impl Segment {
-    pub(crate) const COUNT: usize = 18;
+    pub(crate) const COUNT: usize = 22;
 
     pub(crate) fn all() -> [Self; Self::COUNT] {
         [
@@ -64,6 +68,10 @@ impl Segment {
             Self::TrieEncodedChildLen,
             Self::ShiftTable,
             Self::JumpdestBits,
+            Self::EcdsaTable,
+            Self::BnWnafA,
+            Self::BnWnafB,
+            Self::BnTableQ,
         ]
     }
 
@@ -88,6 +96,10 @@ impl Segment {
             Segment::TrieEncodedChildLen => "SEGMENT_TRIE_ENCODED_CHILD_LEN",
             Segment::ShiftTable => "SEGMENT_SHIFT_TABLE",
             Segment::JumpdestBits => "SEGMENT_JUMPDEST_BITS",
+            Segment::EcdsaTable => "SEGMENT_KERNEL_ECDSA_TABLE",
+            Segment::BnWnafA => "SEGMENT_KERNEL_BN_WNAF_A",
+            Segment::BnWnafB => "SEGMENT_KERNEL_BN_WNAF_B",
+            Segment::BnTableQ => "SEGMENT_KERNEL_BN_TABLE_Q",
         }
     }
 
@@ -112,6 +124,10 @@ impl Segment {
             Segment::TrieEncodedChildLen => 6,
             Segment::ShiftTable => 256,
             Segment::JumpdestBits => 1,
+            Segment::EcdsaTable => 256,
+            Segment::BnWnafA => 8,
+            Segment::BnWnafB => 8,
+            Segment::BnTableQ => 256,
         }
     }
 }

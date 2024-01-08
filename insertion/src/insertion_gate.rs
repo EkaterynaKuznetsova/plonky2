@@ -80,13 +80,6 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for InsertionGate<
         format!("{self:?}<D={D}>")
     }
 
-    fn export_circom_verification_code(&self) -> String {
-        todo!()
-    }
-    fn export_solidity_verification_code(&self) -> String {
-        todo!()
-    }
-
     fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension> {
         let insertion_index = vars.local_wires[self.wires_insertion_index()];
         let list_items = (0..self.vec_size)
@@ -249,7 +242,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for InsertionGate<
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct InsertionGenerator<F: RichField + Extendable<D>, const D: usize> {
     row: usize,
     gate: InsertionGate<F, D>,

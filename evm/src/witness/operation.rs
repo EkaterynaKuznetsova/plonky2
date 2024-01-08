@@ -6,15 +6,16 @@ use plonky2::field::types::Field;
 use crate::cpu::columns::CpuColumnsView;
 use crate::cpu::kernel::aggregator::KERNEL;
 use crate::cpu::kernel::assembler::BYTES_PER_OFFSET;
+use crate::cpu::kernel::constants::context_metadata::ContextMetadata;
 use crate::cpu::membus::NUM_GP_CHANNELS;
 use crate::cpu::simple_logic::eq_iszero::generate_pinv_diff;
 use crate::generation::state::GenerationState;
 use crate::memory::segments::Segment;
 use crate::witness::errors::ProgramError;
-use crate::witness::memory::MemoryAddress;
+use crate::witness::memory::{MemoryAddress, MemoryOp};
 use crate::witness::util::{
-    keccak_sponge_log, mem_read_code_with_log_and_fill, mem_read_gp_with_log_and_fill,
-    mem_write_gp_log_and_fill, stack_pop_with_log_and_fill, stack_push_log_and_fill,
+    keccak_sponge_log, mem_read_gp_with_log_and_fill, mem_write_gp_log_and_fill,
+    stack_pop_with_log_and_fill, stack_push_log_and_fill,
 };
 use crate::{arithmetic, logic};
 
@@ -23,6 +24,8 @@ pub(crate) enum Operation {
     Iszero,
     Not,
     Byte,
+    Shl,
+    Shr,
     Syscall(u8),
     Eq,
     BinaryLogic(logic::Op),
@@ -34,14 +37,12 @@ pub(crate) enum Operation {
     Jump,
     Jumpi,
     Pc,
-    Gas,
     Jumpdest,
     Push(u8),
     Dup(u8),
     Swap(u8),
     GetContext,
     SetContext,
-    ConsumeGas,
     ExitKernel,
     MloadGeneral,
     MstoreGeneral,
@@ -72,24 +73,7 @@ pub(crate) fn generate_binary_arithmetic_op<F: Field>(
     let [(input0, log_in0), (input1, log_in1)] =
         stack_pop_with_log_and_fill::<2, _>(state, &mut row)?;
     let operation = arithmetic::Operation::binary(operator, input0, input1);
-
     let log_out = stack_push_log_and_fill(state, &mut row, operation.result())?;
-
-    if operator == arithmetic::BinaryOperator::Shl || operator == arithmetic::BinaryOperator::Shr {
-        const LOOKUP_CHANNEL: usize = 2;
-        let lookup_addr = MemoryAddress::new(0, Segment::ShiftTable, input0.low_u32() as usize);
-        if input0.bits() <= 32 {
-            let (_, read) =
-                mem_read_gp_with_log_and_fill(LOOKUP_CHANNEL, lookup_addr, state, &mut row);
-            state.traces.push_memory(read);
-        } else {
-            // The shift constraints still expect the address to be set, even though no read will occur.
-            let mut channel = &mut row.mem_channels[LOOKUP_CHANNEL];
-            channel.addr_context = F::from_canonical_usize(lookup_addr.context);
-            channel.addr_segment = F::from_canonical_usize(lookup_addr.segment);
-            channel.addr_virtual = F::from_canonical_usize(lookup_addr.virt);
-        }
-    }
 
     state.traces.push_arithmetic(operation);
     state.traces.push_memory(log_in0);
@@ -309,8 +293,22 @@ pub(crate) fn generate_set_context<F: Field>(
     mut row: CpuColumnsView<F>,
 ) -> Result<(), ProgramError> {
     let [(ctx, log_in)] = stack_pop_with_log_and_fill::<1, _>(state, &mut row)?;
-    state.registers.context = ctx.as_usize();
+    let sp_to_save = state.registers.stack_len.into();
+    let old_ctx = state.registers.context;
+    let new_ctx = ctx.as_usize();
+
+    let sp_field = ContextMetadata::StackSize as usize;
+    let old_sp_addr = MemoryAddress::new(old_ctx, Segment::ContextMetadata, sp_field);
+    let new_sp_addr = MemoryAddress::new(new_ctx, Segment::ContextMetadata, sp_field);
+
+    let log_write_old_sp = mem_write_gp_log_and_fill(1, old_sp_addr, state, &mut row, sp_to_save);
+    let (new_sp, log_read_new_sp) = mem_read_gp_with_log_and_fill(2, new_sp_addr, state, &mut row);
+
+    state.registers.context = new_ctx;
+    state.registers.stack_len = new_sp.as_usize();
     state.traces.push_memory(log_in);
+    state.traces.push_memory(log_write_old_sp);
+    state.traces.push_memory(log_read_new_sp);
     state.traces.push_cpu(row);
     Ok(())
 }
@@ -320,11 +318,9 @@ pub(crate) fn generate_push<F: Field>(
     state: &mut GenerationState<F>,
     mut row: CpuColumnsView<F>,
 ) -> Result<(), ProgramError> {
-    let context = state.registers.effective_context();
+    let code_context = state.registers.code_context();
     let num_bytes = n as usize + 1;
     let initial_offset = state.registers.program_counter + 1;
-    let offsets = initial_offset..initial_offset + num_bytes;
-    let mut addrs = offsets.map(|offset| MemoryAddress::new(context, Segment::Code, offset));
 
     // First read val without going through `mem_read_with_log` type methods, so we can pass it
     // to stack_push_log_and_fill.
@@ -333,7 +329,7 @@ pub(crate) fn generate_push<F: Field>(
             state
                 .memory
                 .get(MemoryAddress::new(
-                    context,
+                    code_context,
                     Segment::Code,
                     initial_offset + i,
                 ))
@@ -344,32 +340,8 @@ pub(crate) fn generate_push<F: Field>(
     let val = U256::from_big_endian(&bytes);
     let write = stack_push_log_and_fill(state, &mut row, val)?;
 
-    // In the first cycle, we read up to NUM_GP_CHANNELS - 1 bytes, leaving the last GP channel
-    // to push the result.
-    for (i, addr) in (&mut addrs).take(NUM_GP_CHANNELS - 1).enumerate() {
-        let (_, read) = mem_read_gp_with_log_and_fill(i, addr, state, &mut row);
-        state.traces.push_memory(read);
-    }
     state.traces.push_memory(write);
     state.traces.push_cpu(row);
-
-    // In any subsequent cycles, we read up to 1 + NUM_GP_CHANNELS bytes.
-    for mut addrs_chunk in &addrs.chunks(1 + NUM_GP_CHANNELS) {
-        let mut row = CpuColumnsView::default();
-        row.is_cpu_cycle = F::ONE;
-        row.op.push = F::ONE;
-
-        let first_addr = addrs_chunk.next().unwrap();
-        let (_, first_read) = mem_read_code_with_log_and_fill(first_addr, state, &mut row);
-        state.traces.push_memory(first_read);
-
-        for (i, addr) in addrs_chunk.enumerate() {
-            let (_, read) = mem_read_gp_with_log_and_fill(i, addr, state, &mut row);
-            state.traces.push_memory(read);
-        }
-
-        state.traces.push_cpu(row);
-    }
 
     Ok(())
 }
@@ -384,11 +356,7 @@ pub(crate) fn generate_dup<F: Field>(
         .stack_len
         .checked_sub(1 + (n as usize))
         .ok_or(ProgramError::StackUnderflow)?;
-    let other_addr = MemoryAddress::new(
-        state.registers.effective_context(),
-        Segment::Stack,
-        other_addr_lo,
-    );
+    let other_addr = MemoryAddress::new(state.registers.context, Segment::Stack, other_addr_lo);
 
     let (val, log_in) = mem_read_gp_with_log_and_fill(0, other_addr, state, &mut row);
     let log_out = stack_push_log_and_fill(state, &mut row, val)?;
@@ -409,11 +377,7 @@ pub(crate) fn generate_swap<F: Field>(
         .stack_len
         .checked_sub(2 + (n as usize))
         .ok_or(ProgramError::StackUnderflow)?;
-    let other_addr = MemoryAddress::new(
-        state.registers.effective_context(),
-        Segment::Stack,
-        other_addr_lo,
-    );
+    let other_addr = MemoryAddress::new(state.registers.context, Segment::Stack, other_addr_lo);
 
     let [(in0, log_in0)] = stack_pop_with_log_and_fill::<1, _>(state, &mut row)?;
     let (in1, log_in1) = mem_read_gp_with_log_and_fill(1, other_addr, state, &mut row);
@@ -483,11 +447,65 @@ pub(crate) fn generate_iszero<F: Field>(
     Ok(())
 }
 
+fn append_shift<F: Field>(
+    state: &mut GenerationState<F>,
+    mut row: CpuColumnsView<F>,
+    input0: U256,
+    log_in0: MemoryOp,
+    log_in1: MemoryOp,
+    result: U256,
+) -> Result<(), ProgramError> {
+    let log_out = stack_push_log_and_fill(state, &mut row, result)?;
+
+    const LOOKUP_CHANNEL: usize = 2;
+    let lookup_addr = MemoryAddress::new(0, Segment::ShiftTable, input0.low_u32() as usize);
+    if input0.bits() <= 32 {
+        let (_, read) = mem_read_gp_with_log_and_fill(LOOKUP_CHANNEL, lookup_addr, state, &mut row);
+        state.traces.push_memory(read);
+    } else {
+        // The shift constraints still expect the address to be set, even though no read will occur.
+        let mut channel = &mut row.mem_channels[LOOKUP_CHANNEL];
+        channel.addr_context = F::from_canonical_usize(lookup_addr.context);
+        channel.addr_segment = F::from_canonical_usize(lookup_addr.segment);
+        channel.addr_virtual = F::from_canonical_usize(lookup_addr.virt);
+    }
+
+    state.traces.push_memory(log_in0);
+    state.traces.push_memory(log_in1);
+    state.traces.push_memory(log_out);
+    state.traces.push_cpu(row);
+    Ok(())
+}
+
+pub(crate) fn generate_shl<F: Field>(
+    state: &mut GenerationState<F>,
+    mut row: CpuColumnsView<F>,
+) -> Result<(), ProgramError> {
+    let [(input0, log_in0), (input1, log_in1)] =
+        stack_pop_with_log_and_fill::<2, _>(state, &mut row)?;
+    let result = input1 << input0;
+    append_shift(state, row, input0, log_in0, log_in1, result)
+}
+
+pub(crate) fn generate_shr<F: Field>(
+    state: &mut GenerationState<F>,
+    mut row: CpuColumnsView<F>,
+) -> Result<(), ProgramError> {
+    let [(input0, log_in0), (input1, log_in1)] =
+        stack_pop_with_log_and_fill::<2, _>(state, &mut row)?;
+    let result = input1 >> input0;
+    append_shift(state, row, input0, log_in0, log_in1, result)
+}
+
 pub(crate) fn generate_syscall<F: Field>(
     opcode: u8,
     state: &mut GenerationState<F>,
     mut row: CpuColumnsView<F>,
 ) -> Result<(), ProgramError> {
+    if TryInto::<u32>::try_into(state.registers.gas_used).is_err() {
+        panic!();
+    }
+
     let handler_jumptable_addr = KERNEL.global_labels["syscall_jumptable"];
     let handler_addr_addr =
         handler_jumptable_addr + (opcode as usize) * (BYTES_PER_OFFSET as usize);
@@ -515,12 +533,14 @@ pub(crate) fn generate_syscall<F: Field>(
     let new_program_counter = handler_addr.as_usize();
 
     let syscall_info = U256::from(state.registers.program_counter + 1)
-        + (U256::from(u64::from(state.registers.is_kernel)) << 32);
+        + (U256::from(u64::from(state.registers.is_kernel)) << 32)
+        + (U256::from(state.registers.gas_used) << 192);
     let log_out = stack_push_log_and_fill(state, &mut row, syscall_info)?;
 
     state.registers.program_counter = new_program_counter;
     log::debug!("Syscall to {}", KERNEL.offset_name(new_program_counter));
     state.registers.is_kernel = true;
+    state.registers.gas_used = 0;
 
     state.traces.push_memory(log_in0);
     state.traces.push_memory(log_in1);
@@ -559,9 +579,14 @@ pub(crate) fn generate_exit_kernel<F: Field>(
     let is_kernel_mode_val = (kexit_info_u64 >> 32) as u32;
     assert!(is_kernel_mode_val == 0 || is_kernel_mode_val == 1);
     let is_kernel_mode = is_kernel_mode_val != 0;
+    let gas_used_val = kexit_info.0[3];
+    if TryInto::<u32>::try_into(gas_used_val).is_err() {
+        panic!();
+    }
 
     state.registers.program_counter = program_counter;
     state.registers.is_kernel = is_kernel_mode;
+    state.registers.gas_used = gas_used_val;
     log::debug!(
         "Exiting to {}, is_kernel={}",
         KERNEL.offset_name(program_counter),

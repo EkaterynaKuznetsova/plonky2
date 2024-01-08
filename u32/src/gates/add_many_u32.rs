@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -89,13 +89,6 @@ impl<F: RichField + Extendable<D>, const D: usize> U32AddManyGate<F, D> {
 impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for U32AddManyGate<F, D> {
     fn id(&self) -> String {
         format!("{self:?}")
-    }
-
-    fn export_circom_verification_code(&self) -> String {
-        todo!()
-    }
-    fn export_solidity_verification_code(&self) -> String {
-        todo!()
     }
 
     fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension> {

@@ -14,7 +14,7 @@ use crate::plonk::config::{AlgebraicHasher, GenericConfig};
 use crate::plonk::proof::{ProofWithPublicInputs, ProofWithPublicInputsTarget};
 
 impl<C: GenericConfig<D>, const D: usize> VerifierOnlyCircuitData<C, D> {
-    pub fn from_slice(slice: &[C::F], common_data: &CommonCircuitData<C::F, D>) -> Result<Self>
+    fn from_slice(slice: &[C::F], common_data: &CommonCircuitData<C::F, D>) -> Result<Self>
     where
         C::Hasher: AlgebraicHasher<C::F>,
     {
@@ -40,7 +40,7 @@ impl<C: GenericConfig<D>, const D: usize> VerifierOnlyCircuitData<C, D> {
 }
 
 impl VerifierCircuitTarget {
-    pub fn from_slice<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>(
+    fn from_slice<F: RichField + Extendable<D>, const D: usize>(
         slice: &[Target],
         common_data: &CommonCircuitData<F, D>,
     ) -> Result<Self> {
@@ -101,7 +101,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             self.goal_common_data = Some(common_data.clone());
         }
 
-        let inner_cyclic_pis = VerifierCircuitTarget::from_slice::<F, C, D>(
+        let inner_cyclic_pis = VerifierCircuitTarget::from_slice::<F, D>(
             &cyclic_proof_with_pis.public_inputs,
             common_data,
         )?;
@@ -188,7 +188,7 @@ mod tests {
     use crate::hash::poseidon::{PoseidonHash, PoseidonPermutation};
     use crate::iop::witness::{PartialWitness, WitnessWrite};
     use crate::plonk::circuit_builder::CircuitBuilder;
-    use crate::plonk::circuit_data::{CircuitConfig, CommonCircuitData, VerifierCircuitTarget};
+    use crate::plonk::circuit_data::{CircuitConfig, CommonCircuitData};
     use crate::plonk::config::{AlgebraicHasher, GenericConfig, PoseidonGoldilocksConfig};
     use crate::recursion::cyclic_recursion::check_cyclic_proof_verifier_data;
     use crate::recursion::dummy_circuit::cyclic_base_proof;
@@ -207,21 +207,17 @@ mod tests {
         let data = builder.build::<C>();
         let config = CircuitConfig::standard_recursion_config();
         let mut builder = CircuitBuilder::<F, D>::new(config);
-        let proof = builder.add_virtual_proof_with_pis::<C>(&data.common);
-        let verifier_data = VerifierCircuitTarget {
-            constants_sigmas_cap: builder.add_virtual_cap(data.common.config.fri_config.cap_height),
-            circuit_digest: builder.add_virtual_hash(),
-        };
+        let proof = builder.add_virtual_proof_with_pis(&data.common);
+        let verifier_data =
+            builder.add_virtual_verifier_data(data.common.config.fri_config.cap_height);
         builder.verify_proof::<C>(&proof, &verifier_data, &data.common);
         let data = builder.build::<C>();
 
         let config = CircuitConfig::standard_recursion_config();
         let mut builder = CircuitBuilder::<F, D>::new(config);
-        let proof = builder.add_virtual_proof_with_pis::<C>(&data.common);
-        let verifier_data = VerifierCircuitTarget {
-            constants_sigmas_cap: builder.add_virtual_cap(data.common.config.fri_config.cap_height),
-            circuit_digest: builder.add_virtual_hash(),
-        };
+        let proof = builder.add_virtual_proof_with_pis(&data.common);
+        let verifier_data =
+            builder.add_virtual_verifier_data(data.common.config.fri_config.cap_height);
         builder.verify_proof::<C>(&proof, &verifier_data, &data.common);
         while builder.num_gates() < 1 << 12 {
             builder.add_gate(NoopGate, vec![]);
@@ -261,7 +257,7 @@ mod tests {
         let condition = builder.add_virtual_bool_target_safe();
 
         // Unpack inner proof's public inputs.
-        let inner_cyclic_proof_with_pis = builder.add_virtual_proof_with_pis::<C>(&common_data);
+        let inner_cyclic_proof_with_pis = builder.add_virtual_proof_with_pis(&common_data);
         let inner_cyclic_pis = &inner_cyclic_proof_with_pis.public_inputs;
         let inner_cyclic_initial_hash = HashOutTarget::try_from(&inner_cyclic_pis[0..4]).unwrap();
         let inner_cyclic_latest_hash = HashOutTarget::try_from(&inner_cyclic_pis[4..8]).unwrap();

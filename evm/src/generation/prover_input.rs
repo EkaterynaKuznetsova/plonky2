@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use anyhow::{bail, Error};
 use ethereum_types::{BigEndianHash, H256, U256};
 use plonky2::field::types::Field;
 
@@ -72,7 +73,10 @@ impl<F: Field> GenerationState<F> {
                 // Return length of code.
                 // stack: codehash, ...
                 let codehash = stack_peek(self, 0).expect("Empty stack");
-                self.inputs.contract_code[&H256::from_uint(&codehash)]
+                self.inputs
+                    .contract_code
+                    .get(&H256::from_uint(&codehash))
+                    .unwrap_or_else(|| panic!("No code found with hash {codehash}"))
                     .len()
                     .into()
             }
@@ -81,7 +85,11 @@ impl<F: Field> GenerationState<F> {
                 // stack: i, code_length, codehash, ...
                 let i = stack_peek(self, 0).expect("Unexpected stack").as_usize();
                 let codehash = stack_peek(self, 2).expect("Unexpected stack");
-                self.inputs.contract_code[&H256::from_uint(&codehash)][i].into()
+                self.inputs
+                    .contract_code
+                    .get(&H256::from_uint(&codehash))
+                    .unwrap_or_else(|| panic!("No code found with hash {codehash}"))[i]
+                    .into()
             }
             _ => panic!("Invalid prover input function."),
         }
@@ -101,7 +109,7 @@ enum FieldOp {
 }
 
 impl FromStr for EvmField {
-    type Err = ();
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
@@ -109,19 +117,19 @@ impl FromStr for EvmField {
             "bn254_scalar" => Bn254Scalar,
             "secp256k1_base" => Secp256k1Base,
             "secp256k1_scalar" => Secp256k1Scalar,
-            _ => panic!("Unrecognized field."),
+            _ => bail!("Unrecognized field."),
         })
     }
 }
 
 impl FromStr for FieldOp {
-    type Err = ();
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "inverse" => Inverse,
             "sqrt" => Sqrt,
-            _ => panic!("Unrecognized field operation."),
+            _ => bail!("Unrecognized field operation."),
         })
     }
 }

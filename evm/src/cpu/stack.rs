@@ -50,6 +50,7 @@ const STACK_BEHAVIORS: OpsColumnsView<Option<StackBehavior>> = OpsColumnsView {
     addfp254: BASIC_BINARY_OP,
     mulfp254: BASIC_BINARY_OP,
     subfp254: BASIC_BINARY_OP,
+    submod: BASIC_TERNARY_OP,
     lt: BASIC_BINARY_OP,
     gt: BASIC_BINARY_OP,
     eq: BASIC_BINARY_OP,
@@ -79,7 +80,6 @@ const STACK_BEHAVIORS: OpsColumnsView<Option<StackBehavior>> = OpsColumnsView {
         pushes: true,
         disable_other_channels: true,
     }),
-    gas: None, // TODO
     jumpdest: Some(StackBehavior {
         num_pops: 0,
         pushes: false,
@@ -93,12 +93,7 @@ const STACK_BEHAVIORS: OpsColumnsView<Option<StackBehavior>> = OpsColumnsView {
         pushes: true,
         disable_other_channels: true,
     }),
-    set_context: Some(StackBehavior {
-        num_pops: 1,
-        pushes: false,
-        disable_other_channels: true,
-    }),
-    consume_gas: None, // TODO
+    set_context: None, // SET_CONTEXT is special since it involves the old and the new stack.
     exit_kernel: Some(StackBehavior {
         num_pops: 1,
         pushes: false,
