@@ -644,7 +644,7 @@ impl<T> AsRef<[T]> for PoseidonPermutation<T> {
     }
 }
 
-trait Permuter: Sized {
+pub trait Permuter: Sized {
     fn permute(input: [Self; SPONGE_WIDTH]) -> [Self; SPONGE_WIDTH];
 }
 
