@@ -69,7 +69,6 @@ impl<F: Extendable<4>> Field for QuarticExtension<F> {
     const ONE: Self = Self([F::ONE, F::ZERO, F::ZERO, F::ZERO]);
     const TWO: Self = Self([F::TWO, F::ZERO, F::ZERO, F::ZERO]);
     const NEG_ONE: Self = Self([F::NEG_ONE, F::ZERO, F::ZERO, F::ZERO]);
-    const MONTGOMERY_INV: Self = todo!();
 
     // `p^4 - 1 = (p - 1)(p + 1)(p^2 + 1)`. The `p - 1` term has a two-adicity of `F::TWO_ADICITY`.
     // As long as `F::TWO_ADICITY >= 2`, `p` can be written as `4n + 1`, so `p + 1` can be written as
@@ -78,7 +77,6 @@ impl<F: Extendable<4>> Field for QuarticExtension<F> {
     const TWO_ADICITY: usize = F::TWO_ADICITY + 2;
     const CHARACTERISTIC_TWO_ADICITY: usize = F::CHARACTERISTIC_TWO_ADICITY;
 
-    const NONRESIDUE: Self = Self(F::EXT_NONRESIDUE);
     const MULTIPLICATIVE_GROUP_GENERATOR: Self = Self(F::EXT_MULTIPLICATIVE_GROUP_GENERATOR);
     const POWER_OF_TWO_GENERATOR: Self = Self(F::EXT_POWER_OF_TWO_GENERATOR);
 
@@ -89,10 +87,6 @@ impl<F: Extendable<4>> Field for QuarticExtension<F> {
     }
     fn characteristic() -> BigUint {
         F::characteristic()
-    }
-
-    fn mul_by_nonresidue(&self) -> Self {
-        todo!()
     }
 
     // Algorithm 11.3.4 in Handbook of Elliptic and Hyperelliptic Curve Cryptography.
@@ -124,6 +118,14 @@ impl<F: Extendable<4>> Field for QuarticExtension<F> {
 
     fn from_noncanonical_u128(n: u128) -> Self {
         F::from_noncanonical_u128(n).into()
+    }
+
+    fn from_noncanonical_i64(n: i64) -> Self {
+        F::from_noncanonical_i64(n).into()
+    }
+
+    fn from_noncanonical_u64(n: u64) -> Self {
+        F::from_noncanonical_u64(n).into()
     }
 }
 

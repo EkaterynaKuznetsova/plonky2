@@ -1,15 +1,22 @@
 mod account_code;
+mod add11;
 mod balance;
+mod bignum;
+mod blake2_f;
+mod block_hash;
+mod bls381;
+mod bn254;
 mod core;
-mod curve_ops;
-mod ecrecover;
+mod ecc;
 mod exp;
-mod fields;
 mod hash;
+mod kernel_consistency;
+mod log;
 mod mpt;
 mod packing;
-mod ripemd;
+mod receipt;
 mod rlp;
+mod signed_syscalls;
 mod transaction_parsing;
 
 use std::str::FromStr;

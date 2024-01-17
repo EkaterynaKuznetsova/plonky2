@@ -1,86 +1,73 @@
+use std::array::from_fn;
 use std::fmt::Debug;
 
-use anyhow::{ensure, Result};
-use itertools::Itertools;
+use anyhow::Result;
+use ethereum_types::{BigEndianHash, H256, U256};
 use plonky2::field::extension::Extendable;
 use plonky2::field::types::Field;
 use plonky2::fri::witness_util::set_fri_proof_target;
-use plonky2::hash::hash_types::{HashOut, RichField};
-use plonky2::hash::hashing::SPONGE_WIDTH;
-use plonky2::iop::challenger::{Challenger, RecursiveChallenger};
+use plonky2::gates::exponentiation::ExponentiationGate;
+use plonky2::gates::gate::GateRef;
+use plonky2::gates::noop::NoopGate;
+use plonky2::hash::hash_types::RichField;
+use plonky2::hash::hashing::PlonkyPermutation;
+use plonky2::iop::challenger::RecursiveChallenger;
 use plonky2::iop::ext_target::ExtensionTarget;
 use plonky2::iop::target::Target;
-use plonky2::iop::witness::Witness;
+use plonky2::iop::witness::{PartialWitness, Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
-use plonky2::plonk::circuit_data::{CircuitConfig, VerifierCircuitData, VerifierCircuitTarget};
-use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, Hasher};
+use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
+use plonky2::plonk::config::{AlgebraicHasher, GenericConfig};
 use plonky2::plonk::proof::{ProofWithPublicInputs, ProofWithPublicInputsTarget};
 use plonky2::util::reducing::ReducingFactorTarget;
+use plonky2::util::serialization::{
+    Buffer, GateSerializer, IoResult, Read, WitnessGeneratorSerializer, Write,
+};
 use plonky2::with_context;
+use plonky2_util::log2_ceil;
 
-use crate::all_stark::{all_cross_table_lookups, AllStark, Table, NUM_TABLES};
+use crate::all_stark::Table;
 use crate::config::StarkConfig;
 use crate::constraint_consumer::RecursiveConstraintConsumer;
-use crate::cpu::cpu_stark::CpuStark;
+use crate::cpu::kernel::aggregator::KERNEL;
+use crate::cpu::kernel::constants::global_metadata::GlobalMetadata;
 use crate::cross_table_lookup::{
-    verify_cross_table_lookups, verify_cross_table_lookups_circuit, CrossTableLookup,
-    CtlCheckVarsTarget,
+    CrossTableLookup, CtlCheckVarsTarget, GrandProductChallenge, GrandProductChallengeSet,
 };
-use crate::keccak::keccak_stark::KeccakStark;
-use crate::keccak_sponge::keccak_sponge_stark::KeccakSpongeStark;
-use crate::logic::LogicStark;
-use crate::memory::memory_stark::MemoryStark;
-use crate::permutation::{
-    get_grand_product_challenge_set, get_grand_product_challenge_set_target, GrandProductChallenge,
-    GrandProductChallengeSet, PermutationCheckDataTarget,
-};
+use crate::evaluation_frame::StarkEvaluationFrame;
+use crate::lookup::LookupCheckVarsTarget;
+use crate::memory::segments::Segment;
+use crate::memory::VALUE_LIMBS;
 use crate::proof::{
-    AllProof, AllProofTarget, BlockMetadata, BlockMetadataTarget, PublicValues, PublicValuesTarget,
-    StarkOpeningSetTarget, StarkProof, StarkProofChallengesTarget, StarkProofTarget, TrieRoots,
+    BlockHashes, BlockHashesTarget, BlockMetadata, BlockMetadataTarget, ExtraBlockData,
+    ExtraBlockDataTarget, PublicValues, PublicValuesTarget, StarkOpeningSetTarget, StarkProof,
+    StarkProofChallengesTarget, StarkProofTarget, StarkProofWithMetadata, TrieRoots,
     TrieRootsTarget,
 };
 use crate::stark::Stark;
-use crate::util::{h160_limbs, h256_limbs};
+use crate::util::{h256_limbs, h2u, u256_limbs, u256_to_u32, u256_to_u64};
 use crate::vanishing_poly::eval_vanishing_poly_circuit;
-use crate::vars::StarkEvaluationTargets;
+use crate::witness::errors::ProgramError;
 
-/// Table-wise recursive proofs of an `AllProof`.
-pub struct RecursiveAllProof<
-    F: RichField + Extendable<D>,
-    C: GenericConfig<D, F = F>,
-    const D: usize,
-> {
-    pub recursive_proofs: [ProofWithPublicInputs<F, C, D>; NUM_TABLES],
+pub(crate) struct PublicInputs<T: Copy + Default + Eq + PartialEq + Debug, P: PlonkyPermutation<T>>
+{
+    pub(crate) trace_cap: Vec<Vec<T>>,
+    pub(crate) ctl_zs_first: Vec<T>,
+    pub(crate) ctl_challenges: GrandProductChallengeSet<T>,
+    pub(crate) challenger_state_before: P,
+    pub(crate) challenger_state_after: P,
 }
 
-pub struct RecursiveAllProofTargetWithData<const D: usize> {
-    pub recursive_proofs: [ProofWithPublicInputsTarget<D>; NUM_TABLES],
-    pub verifier_data: [VerifierCircuitTarget; NUM_TABLES],
-}
-
-struct PublicInputs<T: Copy + Eq + PartialEq + Debug> {
-    trace_cap: Vec<Vec<T>>,
-    ctl_zs_last: Vec<T>,
-    ctl_challenges: GrandProductChallengeSet<T>,
-    challenger_state_before: [T; SPONGE_WIDTH],
-    challenger_state_after: [T; SPONGE_WIDTH],
-}
-
-/// Similar to the unstable `Iterator::next_chunk`. Could be replaced with that when it's stable.
-fn next_chunk<T: Debug, const N: usize>(iter: &mut impl Iterator<Item = T>) -> [T; N] {
-    (0..N)
-        .flat_map(|_| iter.next())
-        .collect_vec()
-        .try_into()
-        .expect("Not enough elements")
-}
-
-impl<T: Copy + Eq + PartialEq + Debug> PublicInputs<T> {
-    fn from_vec(v: &[T], config: &StarkConfig) -> Self {
-        let mut iter = v.iter().copied();
-        let trace_cap = (0..1 << config.fri_config.cap_height)
-            .map(|_| next_chunk::<_, 4>(&mut iter).to_vec())
-            .collect();
+impl<T: Copy + Debug + Default + Eq + PartialEq, P: PlonkyPermutation<T>> PublicInputs<T, P> {
+    pub(crate) fn from_vec(v: &[T], config: &StarkConfig) -> Self {
+        // TODO: Document magic number 4; probably comes from
+        // Ethereum 256 bits = 4 * Goldilocks 64 bits
+        let nelts = config.fri_config.num_cap_elements();
+        let mut trace_cap = Vec::with_capacity(nelts);
+        for i in 0..nelts {
+            trace_cap.push(v[4 * i..4 * (i + 1)].to_vec());
+        }
+        let mut iter = v.iter().copied().skip(4 * nelts);
         let ctl_challenges = GrandProductChallengeSet {
             challenges: (0..config.num_challenges)
                 .map(|_| GrandProductChallenge {
@@ -89,13 +76,13 @@ impl<T: Copy + Eq + PartialEq + Debug> PublicInputs<T> {
                 })
                 .collect(),
         };
-        let challenger_state_before = next_chunk(&mut iter);
-        let challenger_state_after = next_chunk(&mut iter);
-        let ctl_zs_last = iter.collect();
+        let challenger_state_before = P::new(&mut iter);
+        let challenger_state_after = P::new(&mut iter);
+        let ctl_zs_first: Vec<_> = iter.collect();
 
         Self {
             trace_cap,
-            ctl_zs_last,
+            ctl_zs_first,
             ctl_challenges,
             challenger_state_before,
             challenger_state_after,
@@ -103,168 +90,163 @@ impl<T: Copy + Eq + PartialEq + Debug> PublicInputs<T> {
     }
 }
 
-impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
-    RecursiveAllProof<F, C, D>
+/// Represents a circuit which recursively verifies a STARK proof.
+#[derive(Eq, PartialEq, Debug)]
+pub(crate) struct StarkWrapperCircuit<F, C, const D: usize>
+where
+    F: RichField + Extendable<D>,
+    C: GenericConfig<D, F = F>,
+    C::Hasher: AlgebraicHasher<F>,
 {
-    /// Verify every recursive proof.
-    pub fn verify(
-        self,
-        verifier_data: &[VerifierCircuitData<F, C, D>; NUM_TABLES],
-        cross_table_lookups: Vec<CrossTableLookup<F>>,
-        inner_config: &StarkConfig,
-    ) -> Result<()>
-    where
-        [(); C::Hasher::HASH_SIZE]:,
-    {
-        let pis: [_; NUM_TABLES] = std::array::from_fn(|i| {
-            PublicInputs::from_vec(&self.recursive_proofs[i].public_inputs, inner_config)
-        });
+    pub(crate) circuit: CircuitData<F, C, D>,
+    pub(crate) stark_proof_target: StarkProofTarget<D>,
+    pub(crate) ctl_challenges_target: GrandProductChallengeSet<Target>,
+    pub(crate) init_challenger_state_target:
+        <C::Hasher as AlgebraicHasher<F>>::AlgebraicPermutation,
+    pub(crate) zero_target: Target,
+}
 
-        let mut challenger = Challenger::<F, C::Hasher>::new();
-        for pi in &pis {
-            for h in &pi.trace_cap {
-                challenger.observe_elements(h);
-            }
-        }
-        let ctl_challenges =
-            get_grand_product_challenge_set(&mut challenger, inner_config.num_challenges);
-        // Check that the correct CTL challenges are used in every proof.
-        for pi in &pis {
-            ensure!(ctl_challenges == pi.ctl_challenges);
-        }
-
-        let state = challenger.compact();
-        ensure!(state == pis[0].challenger_state_before);
-        // Check that the challenger state is consistent between proofs.
-        for i in 1..NUM_TABLES {
-            ensure!(pis[i].challenger_state_before == pis[i - 1].challenger_state_after);
-        }
-
-        // Verify the CTL checks.
-        let degrees_bits = std::array::from_fn(|i| verifier_data[i].common.degree_bits());
-        verify_cross_table_lookups::<F, C, D>(
-            cross_table_lookups,
-            pis.map(|p| p.ctl_zs_last),
-            degrees_bits,
-            ctl_challenges,
-            inner_config,
-        )?;
-
-        // Verify the proofs.
-        for (proof, verifier_data) in self.recursive_proofs.into_iter().zip(verifier_data) {
-            verifier_data.verify(proof)?;
-        }
+impl<F, C, const D: usize> StarkWrapperCircuit<F, C, D>
+where
+    F: RichField + Extendable<D>,
+    C: GenericConfig<D, F = F>,
+    C::Hasher: AlgebraicHasher<F>,
+{
+    pub(crate) fn to_buffer(
+        &self,
+        buffer: &mut Vec<u8>,
+        gate_serializer: &dyn GateSerializer<F, D>,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+    ) -> IoResult<()> {
+        buffer.write_circuit_data(&self.circuit, gate_serializer, generator_serializer)?;
+        buffer.write_target_vec(self.init_challenger_state_target.as_ref())?;
+        buffer.write_target(self.zero_target)?;
+        self.stark_proof_target.to_buffer(buffer)?;
+        self.ctl_challenges_target.to_buffer(buffer)?;
         Ok(())
     }
 
-    /// Recursively verify every recursive proof.
-    pub fn verify_circuit(
-        builder: &mut CircuitBuilder<F, D>,
-        recursive_all_proof_target: RecursiveAllProofTargetWithData<D>,
-        verifier_data: &[VerifierCircuitData<F, C, D>; NUM_TABLES],
-        inner_config: &StarkConfig,
-    ) where
-        [(); C::Hasher::HASH_SIZE]:,
-        <C as GenericConfig<D>>::Hasher: AlgebraicHasher<F>,
-    {
-        let RecursiveAllProofTargetWithData {
-            recursive_proofs,
-            verifier_data: verifier_data_target,
-        } = recursive_all_proof_target;
-        let pis: [_; NUM_TABLES] = std::array::from_fn(|i| {
-            PublicInputs::from_vec(&recursive_proofs[i].public_inputs, inner_config)
-        });
+    pub(crate) fn from_buffer(
+        buffer: &mut Buffer,
+        gate_serializer: &dyn GateSerializer<F, D>,
+        generator_serializer: &dyn WitnessGeneratorSerializer<F, D>,
+    ) -> IoResult<Self> {
+        let circuit = buffer.read_circuit_data(gate_serializer, generator_serializer)?;
+        let target_vec = buffer.read_target_vec()?;
+        let init_challenger_state_target =
+            <C::Hasher as AlgebraicHasher<F>>::AlgebraicPermutation::new(target_vec);
+        let zero_target = buffer.read_target()?;
+        let stark_proof_target = StarkProofTarget::from_buffer(buffer)?;
+        let ctl_challenges_target = GrandProductChallengeSet::from_buffer(buffer)?;
+        Ok(Self {
+            circuit,
+            stark_proof_target,
+            ctl_challenges_target,
+            init_challenger_state_target,
+            zero_target,
+        })
+    }
 
-        let mut challenger = RecursiveChallenger::<F, C::Hasher, D>::new(builder);
-        for pi in &pis {
-            for h in &pi.trace_cap {
-                challenger.observe_elements(h);
-            }
-        }
-        let ctl_challenges = get_grand_product_challenge_set_target(
-            builder,
-            &mut challenger,
-            inner_config.num_challenges,
+    pub(crate) fn prove(
+        &self,
+        proof_with_metadata: &StarkProofWithMetadata<F, C, D>,
+        ctl_challenges: &GrandProductChallengeSet<F>,
+    ) -> Result<ProofWithPublicInputs<F, C, D>> {
+        let mut inputs = PartialWitness::new();
+
+        set_stark_proof_target(
+            &mut inputs,
+            &self.stark_proof_target,
+            &proof_with_metadata.proof,
+            self.zero_target,
         );
-        // Check that the correct CTL challenges are used in every proof.
-        for pi in &pis {
-            for i in 0..inner_config.num_challenges {
-                builder.connect(
-                    ctl_challenges.challenges[i].beta,
-                    pi.ctl_challenges.challenges[i].beta,
-                );
-                builder.connect(
-                    ctl_challenges.challenges[i].gamma,
-                    pi.ctl_challenges.challenges[i].gamma,
-                );
-            }
-        }
 
-        let state = challenger.compact(builder);
-        for k in 0..SPONGE_WIDTH {
-            builder.connect(state[k], pis[0].challenger_state_before[k]);
-        }
-        // Check that the challenger state is consistent between proofs.
-        for i in 1..NUM_TABLES {
-            for k in 0..SPONGE_WIDTH {
-                builder.connect(
-                    pis[i].challenger_state_before[k],
-                    pis[i - 1].challenger_state_after[k],
-                );
-            }
-        }
-
-        // Verify the CTL checks.
-        let degrees_bits = std::array::from_fn(|i| verifier_data[i].common.degree_bits());
-        verify_cross_table_lookups_circuit::<F, C, D>(
-            builder,
-            all_cross_table_lookups(),
-            pis.map(|p| p.ctl_zs_last),
-            degrees_bits,
-            ctl_challenges,
-            inner_config,
-        );
-        for (i, (recursive_proof, verifier_data_target)) in recursive_proofs
-            .into_iter()
-            .zip(verifier_data_target)
-            .enumerate()
+        for (challenge_target, challenge) in self
+            .ctl_challenges_target
+            .challenges
+            .iter()
+            .zip(&ctl_challenges.challenges)
         {
-            builder.verify_proof::<C>(
-                &recursive_proof,
-                &verifier_data_target,
-                &verifier_data[i].common,
-            );
+            inputs.set_target(challenge_target.beta, challenge.beta);
+            inputs.set_target(challenge_target.gamma, challenge.gamma);
         }
+
+        inputs.set_target_arr(
+            self.init_challenger_state_target.as_ref(),
+            proof_with_metadata.init_challenger_state.as_ref(),
+        );
+
+        self.circuit.prove(inputs)
     }
 }
 
-/// Returns the verifier data for the recursive Stark circuit.
-fn verifier_data_recursive_stark_proof<
+/// Represents a circuit which recursively verifies a PLONK proof.
+#[derive(Eq, PartialEq, Debug)]
+pub(crate) struct PlonkWrapperCircuit<F, C, const D: usize>
+where
+    F: RichField + Extendable<D>,
+    C: GenericConfig<D, F = F>,
+{
+    pub(crate) circuit: CircuitData<F, C, D>,
+    pub(crate) proof_with_pis_target: ProofWithPublicInputsTarget<D>,
+}
+
+impl<F, C, const D: usize> PlonkWrapperCircuit<F, C, D>
+where
+    F: RichField + Extendable<D>,
+    C: GenericConfig<D, F = F>,
+    C::Hasher: AlgebraicHasher<F>,
+{
+    pub(crate) fn prove(
+        &self,
+        proof: &ProofWithPublicInputs<F, C, D>,
+    ) -> Result<ProofWithPublicInputs<F, C, D>> {
+        let mut inputs = PartialWitness::new();
+        inputs.set_proof_with_pis_target(&self.proof_with_pis_target, proof);
+        self.circuit.prove(inputs)
+    }
+}
+
+/// Returns the recursive Stark circuit.
+pub(crate) fn recursive_stark_circuit<
     F: RichField + Extendable<D>,
     C: GenericConfig<D, F = F>,
     S: Stark<F, D>,
     const D: usize,
 >(
     table: Table,
-    stark: S,
+    stark: &S,
     degree_bits: usize,
     cross_table_lookups: &[CrossTableLookup<F>],
     inner_config: &StarkConfig,
     circuit_config: &CircuitConfig,
-) -> VerifierCircuitData<F, C, D>
+    min_degree_bits: usize,
+) -> StarkWrapperCircuit<F, C, D>
 where
-    [(); S::COLUMNS]:,
-    [(); C::Hasher::HASH_SIZE]:,
     C::Hasher: AlgebraicHasher<F>,
 {
     let mut builder = CircuitBuilder::<F, D>::new(circuit_config.clone());
+    let zero_target = builder.zero();
 
-    let num_permutation_zs = stark.num_permutation_batches(inner_config);
-    let num_permutation_batch_size = stark.permutation_batch_size();
-    let num_ctl_zs =
-        CrossTableLookup::num_ctl_zs(cross_table_lookups, table, inner_config.num_challenges);
-    let proof_target =
-        add_virtual_stark_proof(&mut builder, &stark, inner_config, degree_bits, num_ctl_zs);
+    let num_lookup_columns = stark.num_lookup_helper_columns(inner_config);
+    let (total_num_helpers, num_ctl_zs, num_helpers_by_ctl) =
+        CrossTableLookup::num_ctl_helpers_zs_all(
+            cross_table_lookups,
+            table,
+            inner_config.num_challenges,
+            stark.constraint_degree(),
+        );
+    let num_ctl_helper_zs = num_ctl_zs + total_num_helpers;
+
+    let proof_target = add_virtual_stark_proof(
+        &mut builder,
+        stark,
+        inner_config,
+        degree_bits,
+        num_ctl_helper_zs,
+        num_ctl_zs,
+    );
+
     builder.register_public_inputs(
         &proof_target
             .trace_cap
@@ -288,97 +270,60 @@ where
         &proof_target,
         cross_table_lookups,
         &ctl_challenges_target,
-        num_permutation_zs,
+        num_lookup_columns,
+        total_num_helpers,
+        &num_helpers_by_ctl,
     );
 
-    let challenger_state = std::array::from_fn(|_| builder.add_virtual_public_input());
-    let mut challenger = RecursiveChallenger::<F, C::Hasher, D>::from_state(challenger_state);
-    let challenges = proof_target.get_challenges::<F, C>(
-        &mut builder,
-        &mut challenger,
-        num_permutation_zs > 0,
-        num_permutation_batch_size,
-        inner_config,
-    );
+    let init_challenger_state_target =
+        <C::Hasher as AlgebraicHasher<F>>::AlgebraicPermutation::new(std::iter::from_fn(|| {
+            Some(builder.add_virtual_public_input())
+        }));
+    let mut challenger =
+        RecursiveChallenger::<F, C::Hasher, D>::from_state(init_challenger_state_target);
+    let challenges =
+        proof_target.get_challenges::<F, C>(&mut builder, &mut challenger, inner_config);
     let challenger_state = challenger.compact(&mut builder);
-    builder.register_public_inputs(&challenger_state);
+    builder.register_public_inputs(challenger_state.as_ref());
 
-    builder.register_public_inputs(&proof_target.openings.ctl_zs_last);
+    builder.register_public_inputs(&proof_target.openings.ctl_zs_first);
 
     verify_stark_proof_with_challenges_circuit::<F, C, _, D>(
         &mut builder,
-        &stark,
+        stark,
         &proof_target,
         &challenges,
         &ctl_vars,
+        &ctl_challenges_target,
         inner_config,
     );
 
-    builder.build_verifier::<C>()
+    add_common_recursion_gates(&mut builder);
+
+    // Pad to the minimum degree.
+    while log2_ceil(builder.num_gates()) < min_degree_bits {
+        builder.add_gate(NoopGate, vec![]);
+    }
+
+    let circuit = builder.build::<C>();
+    StarkWrapperCircuit {
+        circuit,
+        stark_proof_target: proof_target,
+        ctl_challenges_target,
+        init_challenger_state_target,
+        zero_target,
+    }
 }
 
-/// Returns the recursive Stark circuit verifier data for every Stark in `AllStark`.
-pub fn all_verifier_data_recursive_stark_proof<
-    F: RichField + Extendable<D>,
-    C: GenericConfig<D, F = F>,
-    const D: usize,
->(
-    all_stark: &AllStark<F, D>,
-    degree_bits: [usize; NUM_TABLES],
-    inner_config: &StarkConfig,
-    circuit_config: &CircuitConfig,
-) -> [VerifierCircuitData<F, C, D>; NUM_TABLES]
-where
-    [(); CpuStark::<F, D>::COLUMNS]:,
-    [(); KeccakStark::<F, D>::COLUMNS]:,
-    [(); KeccakSpongeStark::<F, D>::COLUMNS]:,
-    [(); LogicStark::<F, D>::COLUMNS]:,
-    [(); MemoryStark::<F, D>::COLUMNS]:,
-    [(); C::Hasher::HASH_SIZE]:,
-    C::Hasher: AlgebraicHasher<F>,
-{
-    [
-        verifier_data_recursive_stark_proof(
-            Table::Cpu,
-            all_stark.cpu_stark,
-            degree_bits[Table::Cpu as usize],
-            &all_stark.cross_table_lookups,
-            inner_config,
-            circuit_config,
-        ),
-        verifier_data_recursive_stark_proof(
-            Table::Keccak,
-            all_stark.keccak_stark,
-            degree_bits[Table::Keccak as usize],
-            &all_stark.cross_table_lookups,
-            inner_config,
-            circuit_config,
-        ),
-        verifier_data_recursive_stark_proof(
-            Table::KeccakSponge,
-            all_stark.keccak_sponge_stark,
-            degree_bits[Table::KeccakSponge as usize],
-            &all_stark.cross_table_lookups,
-            inner_config,
-            circuit_config,
-        ),
-        verifier_data_recursive_stark_proof(
-            Table::Logic,
-            all_stark.logic_stark,
-            degree_bits[Table::Logic as usize],
-            &all_stark.cross_table_lookups,
-            inner_config,
-            circuit_config,
-        ),
-        verifier_data_recursive_stark_proof(
-            Table::Memory,
-            all_stark.memory_stark,
-            degree_bits[Table::Memory as usize],
-            &all_stark.cross_table_lookups,
-            inner_config,
-            circuit_config,
-        ),
-    ]
+/// Add gates that are sometimes used by recursive circuits, even if it's not actually used by this
+/// particular recursive circuit. This is done for uniformity. We sometimes want all recursion
+/// circuits to have the same gate set, so that we can do 1-of-n conditional recursion efficiently.
+pub(crate) fn add_common_recursion_gates<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+) {
+    builder.add_gate_to_gate_set(GateRef::new(ExponentiationGate::new_from_config(
+        &builder.config,
+    )));
 }
 
 /// Recursively verifies an inner proof.
@@ -393,26 +338,29 @@ fn verify_stark_proof_with_challenges_circuit<
     proof: &StarkProofTarget<D>,
     challenges: &StarkProofChallengesTarget<D>,
     ctl_vars: &[CtlCheckVarsTarget<F, D>],
+    ctl_challenges: &GrandProductChallengeSet<Target>,
     inner_config: &StarkConfig,
 ) where
     C::Hasher: AlgebraicHasher<F>,
-    [(); S::COLUMNS]:,
 {
     let zero = builder.zero();
     let one = builder.one_extension();
 
+    let num_ctl_polys = ctl_vars
+        .iter()
+        .map(|ctl| ctl.helper_columns.len())
+        .sum::<usize>();
+    let num_ctl_z_polys = ctl_vars.len();
+
     let StarkOpeningSetTarget {
         local_values,
         next_values,
-        permutation_ctl_zs,
-        permutation_ctl_zs_next,
-        ctl_zs_last,
+        auxiliary_polys,
+        auxiliary_polys_next,
+        ctl_zs_first,
         quotient_polys,
     } = &proof.openings;
-    let vars = StarkEvaluationTargets {
-        local_values: &local_values.to_vec().try_into().unwrap(),
-        next_values: &next_values.to_vec().try_into().unwrap(),
-    };
+    let vars = S::EvaluationFrameTarget::from_values(local_values, next_values);
 
     let degree_bits = proof.recover_degree_bits(inner_config);
     let zeta_pow_deg = builder.exp_power_of_2_extension(challenges.stark_zeta, degree_bits);
@@ -431,24 +379,29 @@ fn verify_stark_proof_with_challenges_circuit<
         l_last,
     );
 
-    let num_permutation_zs = stark.num_permutation_batches(inner_config);
-    let permutation_data = stark
-        .uses_permutation_args()
-        .then(|| PermutationCheckDataTarget {
-            local_zs: permutation_ctl_zs[..num_permutation_zs].to_vec(),
-            next_zs: permutation_ctl_zs_next[..num_permutation_zs].to_vec(),
-            permutation_challenge_sets: challenges.permutation_challenge_sets.clone().unwrap(),
-        });
+    let num_lookup_columns = stark.num_lookup_helper_columns(inner_config);
+    let lookup_challenges = (num_lookup_columns > 0).then(|| {
+        ctl_challenges
+            .challenges
+            .iter()
+            .map(|ch| ch.beta)
+            .collect::<Vec<_>>()
+    });
+
+    let lookup_vars = stark.uses_lookups().then(|| LookupCheckVarsTarget {
+        local_values: auxiliary_polys[..num_lookup_columns].to_vec(),
+        next_values: auxiliary_polys_next[..num_lookup_columns].to_vec(),
+        challenges: lookup_challenges.unwrap(),
+    });
 
     with_context!(
         builder,
         "evaluate vanishing polynomial",
-        eval_vanishing_poly_circuit::<F, C, S, D>(
+        eval_vanishing_poly_circuit::<F, S, D>(
             builder,
             stark,
-            inner_config,
-            vars,
-            permutation_data,
+            &vars,
+            lookup_vars,
             ctl_vars,
             &mut consumer,
         )
@@ -468,7 +421,7 @@ fn verify_stark_proof_with_challenges_circuit<
 
     let merkle_caps = vec![
         proof.trace_cap.clone(),
-        proof.permutation_ctl_zs_cap.clone(),
+        proof.auxiliary_polys_cap.clone(),
         proof.quotient_polys_cap.clone(),
     ];
 
@@ -476,8 +429,8 @@ fn verify_stark_proof_with_challenges_circuit<
         builder,
         challenges.stark_zeta,
         F::primitive_root_of_unity(degree_bits),
-        degree_bits,
-        ctl_zs_last.len(),
+        num_ctl_polys,
+        ctl_zs_first.len(),
         inner_config,
     );
     builder.verify_fri_proof::<C>(
@@ -488,6 +441,233 @@ fn verify_stark_proof_with_challenges_circuit<
         &proof.opening_proof,
         &inner_config.fri_params(degree_bits),
     );
+}
+
+/// Recursive version of `get_memory_extra_looking_sum`.
+pub(crate) fn get_memory_extra_looking_sum_circuit<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    public_values: &PublicValuesTarget,
+    challenge: GrandProductChallenge<Target>,
+) -> Target {
+    let mut sum = builder.zero();
+
+    // Add metadata writes.
+    let block_fields_scalars = [
+        (
+            GlobalMetadata::BlockTimestamp,
+            public_values.block_metadata.block_timestamp,
+        ),
+        (
+            GlobalMetadata::BlockNumber,
+            public_values.block_metadata.block_number,
+        ),
+        (
+            GlobalMetadata::BlockDifficulty,
+            public_values.block_metadata.block_difficulty,
+        ),
+        (
+            GlobalMetadata::BlockGasLimit,
+            public_values.block_metadata.block_gaslimit,
+        ),
+        (
+            GlobalMetadata::BlockChainId,
+            public_values.block_metadata.block_chain_id,
+        ),
+        (
+            GlobalMetadata::BlockGasUsed,
+            public_values.block_metadata.block_gas_used,
+        ),
+        (
+            GlobalMetadata::BlockGasUsedBefore,
+            public_values.extra_block_data.gas_used_before,
+        ),
+        (
+            GlobalMetadata::BlockGasUsedAfter,
+            public_values.extra_block_data.gas_used_after,
+        ),
+        (
+            GlobalMetadata::TxnNumberBefore,
+            public_values.extra_block_data.txn_number_before,
+        ),
+        (
+            GlobalMetadata::TxnNumberAfter,
+            public_values.extra_block_data.txn_number_after,
+        ),
+    ];
+
+    let beneficiary_random_base_fee_cur_hash_fields: [(GlobalMetadata, &[Target]); 4] = [
+        (
+            GlobalMetadata::BlockBeneficiary,
+            &public_values.block_metadata.block_beneficiary,
+        ),
+        (
+            GlobalMetadata::BlockRandom,
+            &public_values.block_metadata.block_random,
+        ),
+        (
+            GlobalMetadata::BlockBaseFee,
+            &public_values.block_metadata.block_base_fee,
+        ),
+        (
+            GlobalMetadata::BlockCurrentHash,
+            &public_values.block_hashes.cur_hash,
+        ),
+    ];
+
+    let metadata_segment =
+        builder.constant(F::from_canonical_usize(Segment::GlobalMetadata.unscale()));
+    block_fields_scalars.map(|(field, target)| {
+        // Each of those fields fit in 32 bits, hence in a single Target.
+        sum = add_data_write(
+            builder,
+            challenge,
+            sum,
+            metadata_segment,
+            field.unscale(),
+            &[target],
+        );
+    });
+
+    beneficiary_random_base_fee_cur_hash_fields.map(|(field, targets)| {
+        sum = add_data_write(
+            builder,
+            challenge,
+            sum,
+            metadata_segment,
+            field.unscale(),
+            targets,
+        );
+    });
+
+    // Add block hashes writes.
+    let block_hashes_segment =
+        builder.constant(F::from_canonical_usize(Segment::BlockHashes.unscale()));
+    for i in 0..256 {
+        sum = add_data_write(
+            builder,
+            challenge,
+            sum,
+            block_hashes_segment,
+            i,
+            &public_values.block_hashes.prev_hashes[8 * i..8 * (i + 1)],
+        );
+    }
+
+    // Add block bloom filters writes.
+    let bloom_segment =
+        builder.constant(F::from_canonical_usize(Segment::GlobalBlockBloom.unscale()));
+    for i in 0..8 {
+        sum = add_data_write(
+            builder,
+            challenge,
+            sum,
+            bloom_segment,
+            i,
+            &public_values.block_metadata.block_bloom[i * 8..(i + 1) * 8],
+        );
+    }
+
+    // Add trie roots writes.
+    let trie_fields = [
+        (
+            GlobalMetadata::StateTrieRootDigestBefore,
+            public_values.trie_roots_before.state_root,
+        ),
+        (
+            GlobalMetadata::TransactionTrieRootDigestBefore,
+            public_values.trie_roots_before.transactions_root,
+        ),
+        (
+            GlobalMetadata::ReceiptTrieRootDigestBefore,
+            public_values.trie_roots_before.receipts_root,
+        ),
+        (
+            GlobalMetadata::StateTrieRootDigestAfter,
+            public_values.trie_roots_after.state_root,
+        ),
+        (
+            GlobalMetadata::TransactionTrieRootDigestAfter,
+            public_values.trie_roots_after.transactions_root,
+        ),
+        (
+            GlobalMetadata::ReceiptTrieRootDigestAfter,
+            public_values.trie_roots_after.receipts_root,
+        ),
+    ];
+
+    trie_fields.map(|(field, targets)| {
+        sum = add_data_write(
+            builder,
+            challenge,
+            sum,
+            metadata_segment,
+            field.unscale(),
+            &targets,
+        );
+    });
+
+    // Add kernel hash and kernel length.
+    let kernel_hash_limbs = h256_limbs::<F>(KERNEL.code_hash);
+    let kernel_hash_targets: [Target; 8] = from_fn(|i| builder.constant(kernel_hash_limbs[i]));
+    sum = add_data_write(
+        builder,
+        challenge,
+        sum,
+        metadata_segment,
+        GlobalMetadata::KernelHash.unscale(),
+        &kernel_hash_targets,
+    );
+    let kernel_len_target = builder.constant(F::from_canonical_usize(KERNEL.code.len()));
+    sum = add_data_write(
+        builder,
+        challenge,
+        sum,
+        metadata_segment,
+        GlobalMetadata::KernelLen.unscale(),
+        &[kernel_len_target],
+    );
+
+    sum
+}
+
+fn add_data_write<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    challenge: GrandProductChallenge<Target>,
+    running_sum: Target,
+    segment: Target,
+    idx: usize,
+    val: &[Target],
+) -> Target {
+    debug_assert!(val.len() <= VALUE_LIMBS);
+    let len = core::cmp::min(val.len(), VALUE_LIMBS);
+
+    let row = builder.add_virtual_targets(13);
+    // is_read = false
+    builder.assert_zero(row[0]);
+    // context = 0
+    builder.assert_zero(row[1]);
+    // segment
+    builder.connect(row[2], segment);
+    // virtual
+    let field_target = builder.constant(F::from_canonical_usize(idx));
+    builder.connect(row[3], field_target);
+
+    // values
+    for j in 0..len {
+        // connect the actual value limbs
+        builder.connect(row[4 + j], val[j]);
+    }
+    for j in len..VALUE_LIMBS {
+        // assert that the remaining limbs are 0
+        builder.assert_zero(row[4 + j]);
+    }
+
+    // timestamp = 1
+    builder.assert_one(row[12]);
+
+    let combined = challenge.combine_base_circuit(builder, &row);
+    let inverse = builder.inverse(combined);
+    builder.add(running_sum, inverse)
 }
 
 fn eval_l_0_and_l_last_circuit<F: RichField + Extendable<D>, const D: usize>(
@@ -509,105 +689,29 @@ fn eval_l_0_and_l_last_circuit<F: RichField + Extendable<D>, const D: usize>(
     )
 }
 
-pub fn add_virtual_all_proof<F: RichField + Extendable<D>, const D: usize>(
-    builder: &mut CircuitBuilder<F, D>,
-    all_stark: &AllStark<F, D>,
-    config: &StarkConfig,
-    degree_bits: &[usize],
-    nums_ctl_zs: &[usize],
-) -> AllProofTarget<D> {
-    let stark_proofs = [
-        add_virtual_stark_proof(
-            builder,
-            &all_stark.cpu_stark,
-            config,
-            degree_bits[Table::Cpu as usize],
-            nums_ctl_zs[Table::Cpu as usize],
-        ),
-        add_virtual_stark_proof(
-            builder,
-            &all_stark.keccak_stark,
-            config,
-            degree_bits[Table::Keccak as usize],
-            nums_ctl_zs[Table::Keccak as usize],
-        ),
-        add_virtual_stark_proof(
-            builder,
-            &all_stark.keccak_sponge_stark,
-            config,
-            degree_bits[Table::KeccakSponge as usize],
-            nums_ctl_zs[Table::KeccakSponge as usize],
-        ),
-        add_virtual_stark_proof(
-            builder,
-            &all_stark.logic_stark,
-            config,
-            degree_bits[Table::Logic as usize],
-            nums_ctl_zs[Table::Logic as usize],
-        ),
-        add_virtual_stark_proof(
-            builder,
-            &all_stark.memory_stark,
-            config,
-            degree_bits[Table::Memory as usize],
-            nums_ctl_zs[Table::Memory as usize],
-        ),
-    ];
-
-    let public_values = add_virtual_public_values(builder);
-    AllProofTarget {
-        stark_proofs,
-        public_values,
-    }
-}
-
-/// Returns `RecursiveAllProofTargetWithData` where the proofs targets are virtual and the
-/// verifier data targets are constants.
-pub fn add_virtual_recursive_all_proof<F: RichField + Extendable<D>, H, C, const D: usize>(
-    builder: &mut CircuitBuilder<F, D>,
-    verifier_data: &[VerifierCircuitData<F, C, D>; NUM_TABLES],
-) -> RecursiveAllProofTargetWithData<D>
-where
-    H: Hasher<F, Hash = HashOut<F>>,
-    C: GenericConfig<D, F = F, Hasher = H>,
-{
-    let recursive_proofs = std::array::from_fn(|i| {
-        let verifier_data = &verifier_data[i];
-        builder.add_virtual_proof_with_pis::<C>(&verifier_data.common)
-    });
-    let verifier_data = std::array::from_fn(|i| {
-        let verifier_data = &verifier_data[i];
-        VerifierCircuitTarget {
-            constants_sigmas_cap: builder
-                .constant_merkle_cap(&verifier_data.verifier_only.constants_sigmas_cap),
-            circuit_digest: builder.add_virtual_hash(),
-        }
-    });
-    RecursiveAllProofTargetWithData {
-        recursive_proofs,
-        verifier_data,
-    }
-}
-
-pub fn add_virtual_public_values<F: RichField + Extendable<D>, const D: usize>(
+pub(crate) fn add_virtual_public_values<F: RichField + Extendable<D>, const D: usize>(
     builder: &mut CircuitBuilder<F, D>,
 ) -> PublicValuesTarget {
     let trie_roots_before = add_virtual_trie_roots(builder);
     let trie_roots_after = add_virtual_trie_roots(builder);
     let block_metadata = add_virtual_block_metadata(builder);
+    let block_hashes = add_virtual_block_hashes(builder);
+    let extra_block_data = add_virtual_extra_block_data(builder);
     PublicValuesTarget {
         trie_roots_before,
         trie_roots_after,
         block_metadata,
+        block_hashes,
+        extra_block_data,
     }
 }
 
-pub fn add_virtual_trie_roots<F: RichField + Extendable<D>, const D: usize>(
+pub(crate) fn add_virtual_trie_roots<F: RichField + Extendable<D>, const D: usize>(
     builder: &mut CircuitBuilder<F, D>,
 ) -> TrieRootsTarget {
-    let state_root = builder.add_virtual_target_arr();
-    let transactions_root = builder.add_virtual_target_arr();
-    let receipts_root = builder.add_virtual_target_arr();
+    let state_root = builder.add_virtual_public_input_arr();
+    let transactions_root = builder.add_virtual_public_input_arr();
+    let receipts_root = builder.add_virtual_public_input_arr();
     TrieRootsTarget {
         state_root,
         transactions_root,
@@ -615,32 +719,70 @@ pub fn add_virtual_trie_roots<F: RichField + Extendable<D>, const D: usize>(
     }
 }
 
-pub fn add_virtual_block_metadata<F: RichField + Extendable<D>, const D: usize>(
+pub(crate) fn add_virtual_block_metadata<F: RichField + Extendable<D>, const D: usize>(
     builder: &mut CircuitBuilder<F, D>,
 ) -> BlockMetadataTarget {
-    let block_beneficiary = builder.add_virtual_target_arr();
-    let block_timestamp = builder.add_virtual_target();
-    let block_number = builder.add_virtual_target();
-    let block_difficulty = builder.add_virtual_target();
-    let block_gaslimit = builder.add_virtual_target();
-    let block_chain_id = builder.add_virtual_target();
-    let block_base_fee = builder.add_virtual_target();
+    let block_beneficiary = builder.add_virtual_public_input_arr();
+    let block_timestamp = builder.add_virtual_public_input();
+    let block_number = builder.add_virtual_public_input();
+    let block_difficulty = builder.add_virtual_public_input();
+    let block_random = builder.add_virtual_public_input_arr();
+    let block_gaslimit = builder.add_virtual_public_input();
+    let block_chain_id = builder.add_virtual_public_input();
+    let block_base_fee = builder.add_virtual_public_input_arr();
+    let block_gas_used = builder.add_virtual_public_input();
+    let block_bloom = builder.add_virtual_public_input_arr();
     BlockMetadataTarget {
         block_beneficiary,
         block_timestamp,
         block_number,
         block_difficulty,
+        block_random,
         block_gaslimit,
         block_chain_id,
         block_base_fee,
+        block_gas_used,
+        block_bloom,
     }
 }
 
-pub fn add_virtual_stark_proof<F: RichField + Extendable<D>, S: Stark<F, D>, const D: usize>(
+pub(crate) fn add_virtual_block_hashes<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+) -> BlockHashesTarget {
+    let prev_hashes = builder.add_virtual_public_input_arr();
+    let cur_hash = builder.add_virtual_public_input_arr();
+    BlockHashesTarget {
+        prev_hashes,
+        cur_hash,
+    }
+}
+pub(crate) fn add_virtual_extra_block_data<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+) -> ExtraBlockDataTarget {
+    let checkpoint_state_trie_root = builder.add_virtual_public_input_arr();
+    let txn_number_before = builder.add_virtual_public_input();
+    let txn_number_after = builder.add_virtual_public_input();
+    let gas_used_before = builder.add_virtual_public_input();
+    let gas_used_after = builder.add_virtual_public_input();
+    ExtraBlockDataTarget {
+        checkpoint_state_trie_root,
+        txn_number_before,
+        txn_number_after,
+        gas_used_before,
+        gas_used_after,
+    }
+}
+
+pub(crate) fn add_virtual_stark_proof<
+    F: RichField + Extendable<D>,
+    S: Stark<F, D>,
+    const D: usize,
+>(
     builder: &mut CircuitBuilder<F, D>,
     stark: &S,
     config: &StarkConfig,
     degree_bits: usize,
+    num_ctl_helper_zs: usize,
     num_ctl_zs: usize,
 ) -> StarkProofTarget<D> {
     let fri_params = config.fri_params(degree_bits);
@@ -648,17 +790,23 @@ pub fn add_virtual_stark_proof<F: RichField + Extendable<D>, S: Stark<F, D>, con
 
     let num_leaves_per_oracle = vec![
         S::COLUMNS,
-        stark.num_permutation_batches(config) + num_ctl_zs,
+        stark.num_lookup_helper_columns(config) + num_ctl_helper_zs,
         stark.quotient_degree_factor() * config.num_challenges,
     ];
 
-    let permutation_zs_cap = builder.add_virtual_cap(cap_height);
+    let auxiliary_polys_cap = builder.add_virtual_cap(cap_height);
 
     StarkProofTarget {
         trace_cap: builder.add_virtual_cap(cap_height),
-        permutation_ctl_zs_cap: permutation_zs_cap,
+        auxiliary_polys_cap,
         quotient_polys_cap: builder.add_virtual_cap(cap_height),
-        openings: add_virtual_stark_opening_set::<F, S, D>(builder, stark, num_ctl_zs, config),
+        openings: add_virtual_stark_opening_set::<F, S, D>(
+            builder,
+            stark,
+            num_ctl_helper_zs,
+            num_ctl_zs,
+            config,
+        ),
         opening_proof: builder.add_virtual_fri_proof(&num_leaves_per_oracle, &fri_params),
     }
 }
@@ -666,6 +814,7 @@ pub fn add_virtual_stark_proof<F: RichField + Extendable<D>, S: Stark<F, D>, con
 fn add_virtual_stark_opening_set<F: RichField + Extendable<D>, S: Stark<F, D>, const D: usize>(
     builder: &mut CircuitBuilder<F, D>,
     stark: &S,
+    num_ctl_helper_zs: usize,
     num_ctl_zs: usize,
     config: &StarkConfig,
 ) -> StarkOpeningSetTarget<D> {
@@ -673,57 +822,19 @@ fn add_virtual_stark_opening_set<F: RichField + Extendable<D>, S: Stark<F, D>, c
     StarkOpeningSetTarget {
         local_values: builder.add_virtual_extension_targets(S::COLUMNS),
         next_values: builder.add_virtual_extension_targets(S::COLUMNS),
-        permutation_ctl_zs: builder
-            .add_virtual_extension_targets(stark.num_permutation_batches(config) + num_ctl_zs),
-        permutation_ctl_zs_next: builder
-            .add_virtual_extension_targets(stark.num_permutation_batches(config) + num_ctl_zs),
-        ctl_zs_last: builder.add_virtual_targets(num_ctl_zs),
+        auxiliary_polys: builder.add_virtual_extension_targets(
+            stark.num_lookup_helper_columns(config) + num_ctl_helper_zs,
+        ),
+        auxiliary_polys_next: builder.add_virtual_extension_targets(
+            stark.num_lookup_helper_columns(config) + num_ctl_helper_zs,
+        ),
+        ctl_zs_first: builder.add_virtual_targets(num_ctl_zs),
         quotient_polys: builder
             .add_virtual_extension_targets(stark.quotient_degree_factor() * num_challenges),
     }
 }
 
-pub fn set_recursive_all_proof_target<F, C: GenericConfig<D, F = F>, W, const D: usize>(
-    witness: &mut W,
-    recursive_all_proof_target: &RecursiveAllProofTargetWithData<D>,
-    all_proof: &RecursiveAllProof<F, C, D>,
-) where
-    F: RichField + Extendable<D>,
-    C::Hasher: AlgebraicHasher<F>,
-    W: Witness<F>,
-{
-    for i in 0..NUM_TABLES {
-        witness.set_proof_with_pis_target(
-            &recursive_all_proof_target.recursive_proofs[i],
-            &all_proof.recursive_proofs[i],
-        );
-    }
-}
-pub fn set_all_proof_target<F, C: GenericConfig<D, F = F>, W, const D: usize>(
-    witness: &mut W,
-    all_proof_target: &AllProofTarget<D>,
-    all_proof: &AllProof<F, C, D>,
-    zero: Target,
-) where
-    F: RichField + Extendable<D>,
-    C::Hasher: AlgebraicHasher<F>,
-    W: Witness<F>,
-{
-    for (pt, p) in all_proof_target
-        .stark_proofs
-        .iter()
-        .zip_eq(&all_proof.stark_proofs)
-    {
-        set_stark_proof_target(witness, pt, p, zero);
-    }
-    set_public_value_targets(
-        witness,
-        &all_proof_target.public_values,
-        &all_proof.public_values,
-    )
-}
-
-pub fn set_stark_proof_target<F, C: GenericConfig<D, F = F>, W, const D: usize>(
+pub(crate) fn set_stark_proof_target<F, C: GenericConfig<D, F = F>, W, const D: usize>(
     witness: &mut W,
     proof_target: &StarkProofTarget<D>,
     proof: &StarkProof<F, C, D>,
@@ -742,8 +853,8 @@ pub fn set_stark_proof_target<F, C: GenericConfig<D, F = F>, W, const D: usize>(
     );
 
     witness.set_cap_target(
-        &proof_target.permutation_ctl_zs_cap,
-        &proof.permutation_ctl_zs_cap,
+        &proof_target.auxiliary_polys_cap,
+        &proof.auxiliary_polys_cap,
     );
 
     set_fri_proof_target(witness, &proof_target.opening_proof, &proof.opening_proof);
@@ -753,7 +864,8 @@ pub fn set_public_value_targets<F, W, const D: usize>(
     witness: &mut W,
     public_values_target: &PublicValuesTarget,
     public_values: &PublicValues,
-) where
+) -> Result<(), ProgramError>
+where
     F: RichField + Extendable<D>,
     W: Witness<F>,
 {
@@ -771,10 +883,22 @@ pub fn set_public_value_targets<F, W, const D: usize>(
         witness,
         &public_values_target.block_metadata,
         &public_values.block_metadata,
+    )?;
+    set_block_hashes_target(
+        witness,
+        &public_values_target.block_hashes,
+        &public_values.block_hashes,
     );
+    set_extra_public_values_target(
+        witness,
+        &public_values_target.extra_block_data,
+        &public_values.extra_block_data,
+    )?;
+
+    Ok(())
 }
 
-pub fn set_trie_roots_target<F, W, const D: usize>(
+pub(crate) fn set_trie_roots_target<F, W, const D: usize>(
     witness: &mut W,
     trie_roots_target: &TrieRootsTarget,
     trie_roots: &TrieRoots,
@@ -782,271 +906,149 @@ pub fn set_trie_roots_target<F, W, const D: usize>(
     F: RichField + Extendable<D>,
     W: Witness<F>,
 {
-    witness.set_target_arr(
-        trie_roots_target.state_root,
-        h256_limbs(trie_roots.state_root),
-    );
-    witness.set_target_arr(
-        trie_roots_target.transactions_root,
-        h256_limbs(trie_roots.transactions_root),
-    );
-    witness.set_target_arr(
-        trie_roots_target.receipts_root,
-        h256_limbs(trie_roots.receipts_root),
-    );
+    for (i, limb) in trie_roots.state_root.into_uint().0.into_iter().enumerate() {
+        witness.set_target(
+            trie_roots_target.state_root[2 * i],
+            F::from_canonical_u32(limb as u32),
+        );
+        witness.set_target(
+            trie_roots_target.state_root[2 * i + 1],
+            F::from_canonical_u32((limb >> 32) as u32),
+        );
+    }
+
+    for (i, limb) in trie_roots
+        .transactions_root
+        .into_uint()
+        .0
+        .into_iter()
+        .enumerate()
+    {
+        witness.set_target(
+            trie_roots_target.transactions_root[2 * i],
+            F::from_canonical_u32(limb as u32),
+        );
+        witness.set_target(
+            trie_roots_target.transactions_root[2 * i + 1],
+            F::from_canonical_u32((limb >> 32) as u32),
+        );
+    }
+
+    for (i, limb) in trie_roots
+        .receipts_root
+        .into_uint()
+        .0
+        .into_iter()
+        .enumerate()
+    {
+        witness.set_target(
+            trie_roots_target.receipts_root[2 * i],
+            F::from_canonical_u32(limb as u32),
+        );
+        witness.set_target(
+            trie_roots_target.receipts_root[2 * i + 1],
+            F::from_canonical_u32((limb >> 32) as u32),
+        );
+    }
 }
 
-pub fn set_block_metadata_target<F, W, const D: usize>(
+pub(crate) fn set_block_metadata_target<F, W, const D: usize>(
     witness: &mut W,
     block_metadata_target: &BlockMetadataTarget,
     block_metadata: &BlockMetadata,
+) -> Result<(), ProgramError>
+where
+    F: RichField + Extendable<D>,
+    W: Witness<F>,
+{
+    let beneficiary_limbs: [F; 5] =
+        u256_limbs::<F>(U256::from_big_endian(&block_metadata.block_beneficiary.0))[..5]
+            .try_into()
+            .unwrap();
+    witness.set_target_arr(&block_metadata_target.block_beneficiary, &beneficiary_limbs);
+    witness.set_target(
+        block_metadata_target.block_timestamp,
+        u256_to_u32(block_metadata.block_timestamp)?,
+    );
+    witness.set_target(
+        block_metadata_target.block_number,
+        u256_to_u32(block_metadata.block_number)?,
+    );
+    witness.set_target(
+        block_metadata_target.block_difficulty,
+        u256_to_u32(block_metadata.block_difficulty)?,
+    );
+    witness.set_target_arr(
+        &block_metadata_target.block_random,
+        &h256_limbs(block_metadata.block_random),
+    );
+    witness.set_target(
+        block_metadata_target.block_gaslimit,
+        u256_to_u32(block_metadata.block_gaslimit)?,
+    );
+    witness.set_target(
+        block_metadata_target.block_chain_id,
+        u256_to_u32(block_metadata.block_chain_id)?,
+    );
+    // Basefee fits in 2 limbs
+    let basefee = u256_to_u64(block_metadata.block_base_fee)?;
+    witness.set_target(block_metadata_target.block_base_fee[0], basefee.0);
+    witness.set_target(block_metadata_target.block_base_fee[1], basefee.1);
+    witness.set_target(
+        block_metadata_target.block_gas_used,
+        u256_to_u32(block_metadata.block_gas_used)?,
+    );
+    let mut block_bloom_limbs = [F::ZERO; 64];
+    for (i, limbs) in block_bloom_limbs.chunks_exact_mut(8).enumerate() {
+        limbs.copy_from_slice(&u256_limbs(block_metadata.block_bloom[i]));
+    }
+    witness.set_target_arr(&block_metadata_target.block_bloom, &block_bloom_limbs);
+
+    Ok(())
+}
+
+pub(crate) fn set_block_hashes_target<F, W, const D: usize>(
+    witness: &mut W,
+    block_hashes_target: &BlockHashesTarget,
+    block_hashes: &BlockHashes,
 ) where
     F: RichField + Extendable<D>,
     W: Witness<F>,
 {
-    witness.set_target_arr(
-        block_metadata_target.block_beneficiary,
-        h160_limbs(block_metadata.block_beneficiary),
-    );
-    witness.set_target(
-        block_metadata_target.block_timestamp,
-        F::from_canonical_u64(block_metadata.block_timestamp.as_u64()),
-    );
-    witness.set_target(
-        block_metadata_target.block_number,
-        F::from_canonical_u64(block_metadata.block_number.as_u64()),
-    );
-    witness.set_target(
-        block_metadata_target.block_difficulty,
-        F::from_canonical_u64(block_metadata.block_difficulty.as_u64()),
-    );
-    witness.set_target(
-        block_metadata_target.block_gaslimit,
-        F::from_canonical_u64(block_metadata.block_gaslimit.as_u64()),
-    );
-    witness.set_target(
-        block_metadata_target.block_chain_id,
-        F::from_canonical_u64(block_metadata.block_chain_id.as_u64()),
-    );
-    witness.set_target(
-        block_metadata_target.block_base_fee,
-        F::from_canonical_u64(block_metadata.block_base_fee.as_u64()),
-    );
+    for i in 0..256 {
+        let block_hash_limbs: [F; 8] = h256_limbs::<F>(block_hashes.prev_hashes[i]);
+        witness.set_target_arr(
+            &block_hashes_target.prev_hashes[8 * i..8 * (i + 1)],
+            &block_hash_limbs,
+        );
+    }
+    let cur_block_hash_limbs: [F; 8] = h256_limbs::<F>(block_hashes.cur_hash);
+    witness.set_target_arr(&block_hashes_target.cur_hash, &cur_block_hash_limbs);
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use anyhow::Result;
-    use plonky2::field::extension::Extendable;
-    use plonky2::hash::hash_types::RichField;
-    use plonky2::hash::hashing::SPONGE_WIDTH;
-    use plonky2::iop::challenger::RecursiveChallenger;
-    use plonky2::iop::witness::{PartialWitness, WitnessWrite};
-    use plonky2::plonk::circuit_builder::CircuitBuilder;
-    use plonky2::plonk::circuit_data::{CircuitConfig, VerifierCircuitData};
-    use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, Hasher};
-    use plonky2::plonk::proof::ProofWithPublicInputs;
+pub(crate) fn set_extra_public_values_target<F, W, const D: usize>(
+    witness: &mut W,
+    ed_target: &ExtraBlockDataTarget,
+    ed: &ExtraBlockData,
+) -> Result<(), ProgramError>
+where
+    F: RichField + Extendable<D>,
+    W: Witness<F>,
+{
+    witness.set_target_arr(
+        &ed_target.checkpoint_state_trie_root,
+        &h256_limbs::<F>(ed.checkpoint_state_trie_root),
+    );
+    witness.set_target(
+        ed_target.txn_number_before,
+        u256_to_u32(ed.txn_number_before)?,
+    );
+    witness.set_target(
+        ed_target.txn_number_after,
+        u256_to_u32(ed.txn_number_after)?,
+    );
+    witness.set_target(ed_target.gas_used_before, u256_to_u32(ed.gas_used_before)?);
+    witness.set_target(ed_target.gas_used_after, u256_to_u32(ed.gas_used_after)?);
 
-    use crate::all_stark::{AllStark, Table};
-    use crate::config::StarkConfig;
-    use crate::cpu::cpu_stark::CpuStark;
-    use crate::cross_table_lookup::{CrossTableLookup, CtlCheckVarsTarget};
-    use crate::keccak::keccak_stark::KeccakStark;
-    use crate::keccak_sponge::keccak_sponge_stark::KeccakSpongeStark;
-    use crate::logic::LogicStark;
-    use crate::memory::memory_stark::MemoryStark;
-    use crate::permutation::{GrandProductChallenge, GrandProductChallengeSet};
-    use crate::proof::{AllChallengerState, AllProof, StarkProof};
-    use crate::recursive_verifier::{
-        add_virtual_stark_proof, set_stark_proof_target,
-        verify_stark_proof_with_challenges_circuit, RecursiveAllProof,
-    };
-    use crate::stark::Stark;
-
-    /// Recursively verify a Stark proof.
-    /// Outputs the recursive proof and the associated verifier data.
-    #[allow(unused)] // TODO: used later?
-    fn recursively_verify_stark_proof<
-        F: RichField + Extendable<D>,
-        C: GenericConfig<D, F = F>,
-        S: Stark<F, D>,
-        const D: usize,
-    >(
-        table: Table,
-        stark: S,
-        proof: &StarkProof<F, C, D>,
-        cross_table_lookups: &[CrossTableLookup<F>],
-        ctl_challenges: &GrandProductChallengeSet<F>,
-        challenger_state_before_vals: [F; SPONGE_WIDTH],
-        inner_config: &StarkConfig,
-        circuit_config: &CircuitConfig,
-    ) -> Result<(ProofWithPublicInputs<F, C, D>, VerifierCircuitData<F, C, D>)>
-    where
-        [(); S::COLUMNS]:,
-        [(); C::Hasher::HASH_SIZE]:,
-        C::Hasher: AlgebraicHasher<F>,
-    {
-        let mut builder = CircuitBuilder::<F, D>::new(circuit_config.clone());
-        let mut pw = PartialWitness::new();
-
-        let num_permutation_zs = stark.num_permutation_batches(inner_config);
-        let num_permutation_batch_size = stark.permutation_batch_size();
-        let proof_target = add_virtual_stark_proof(
-            &mut builder,
-            &stark,
-            inner_config,
-            proof.recover_degree_bits(inner_config),
-            proof.num_ctl_zs(),
-        );
-        set_stark_proof_target(&mut pw, &proof_target, proof, builder.zero());
-        builder.register_public_inputs(
-            &proof_target
-                .trace_cap
-                .0
-                .iter()
-                .flat_map(|h| h.elements)
-                .collect::<Vec<_>>(),
-        );
-
-        let ctl_challenges_target = GrandProductChallengeSet {
-            challenges: (0..inner_config.num_challenges)
-                .map(|_| GrandProductChallenge {
-                    beta: builder.add_virtual_public_input(),
-                    gamma: builder.add_virtual_public_input(),
-                })
-                .collect(),
-        };
-        for i in 0..inner_config.num_challenges {
-            pw.set_target(
-                ctl_challenges_target.challenges[i].beta,
-                ctl_challenges.challenges[i].beta,
-            );
-            pw.set_target(
-                ctl_challenges_target.challenges[i].gamma,
-                ctl_challenges.challenges[i].gamma,
-            );
-        }
-
-        let ctl_vars = CtlCheckVarsTarget::from_proof(
-            table,
-            &proof_target,
-            cross_table_lookups,
-            &ctl_challenges_target,
-            num_permutation_zs,
-        );
-
-        let challenger_state_before = std::array::from_fn(|_| builder.add_virtual_public_input());
-        pw.set_target_arr(challenger_state_before, challenger_state_before_vals);
-        let mut challenger =
-            RecursiveChallenger::<F, C::Hasher, D>::from_state(challenger_state_before);
-        let challenges = proof_target.get_challenges::<F, C>(
-            &mut builder,
-            &mut challenger,
-            num_permutation_zs > 0,
-            num_permutation_batch_size,
-            inner_config,
-        );
-        let challenger_state_after = challenger.compact(&mut builder);
-        builder.register_public_inputs(&challenger_state_after);
-
-        builder.register_public_inputs(&proof_target.openings.ctl_zs_last);
-
-        verify_stark_proof_with_challenges_circuit::<F, C, _, D>(
-            &mut builder,
-            &stark,
-            &proof_target,
-            &challenges,
-            &ctl_vars,
-            inner_config,
-        );
-
-        let data = builder.build::<C>();
-        Ok((data.prove(pw)?, data.verifier_data()))
-    }
-
-    /// Recursively verify every Stark proof in an `AllProof`.
-    #[allow(unused)] // TODO: used later?
-    pub fn recursively_verify_all_proof<
-        F: RichField + Extendable<D>,
-        C: GenericConfig<D, F = F>,
-        const D: usize,
-    >(
-        all_stark: &AllStark<F, D>,
-        all_proof: &AllProof<F, C, D>,
-        inner_config: &StarkConfig,
-        circuit_config: &CircuitConfig,
-    ) -> Result<RecursiveAllProof<F, C, D>>
-    where
-        [(); CpuStark::<F, D>::COLUMNS]:,
-        [(); KeccakStark::<F, D>::COLUMNS]:,
-        [(); KeccakSpongeStark::<F, D>::COLUMNS]:,
-        [(); LogicStark::<F, D>::COLUMNS]:,
-        [(); MemoryStark::<F, D>::COLUMNS]:,
-        [(); C::Hasher::HASH_SIZE]:,
-        C::Hasher: AlgebraicHasher<F>,
-    {
-        let AllChallengerState {
-            states,
-            ctl_challenges,
-        } = all_proof.get_challenger_states(all_stark, inner_config);
-        Ok(RecursiveAllProof {
-            recursive_proofs: [
-                recursively_verify_stark_proof(
-                    Table::Cpu,
-                    all_stark.cpu_stark,
-                    &all_proof.stark_proofs[Table::Cpu as usize],
-                    &all_stark.cross_table_lookups,
-                    &ctl_challenges,
-                    states[0],
-                    inner_config,
-                    circuit_config,
-                )?
-                .0,
-                recursively_verify_stark_proof(
-                    Table::Keccak,
-                    all_stark.keccak_stark,
-                    &all_proof.stark_proofs[Table::Keccak as usize],
-                    &all_stark.cross_table_lookups,
-                    &ctl_challenges,
-                    states[1],
-                    inner_config,
-                    circuit_config,
-                )?
-                .0,
-                recursively_verify_stark_proof(
-                    Table::KeccakSponge,
-                    all_stark.keccak_sponge_stark,
-                    &all_proof.stark_proofs[Table::KeccakSponge as usize],
-                    &all_stark.cross_table_lookups,
-                    &ctl_challenges,
-                    states[2],
-                    inner_config,
-                    circuit_config,
-                )?
-                .0,
-                recursively_verify_stark_proof(
-                    Table::Logic,
-                    all_stark.logic_stark,
-                    &all_proof.stark_proofs[Table::Logic as usize],
-                    &all_stark.cross_table_lookups,
-                    &ctl_challenges,
-                    states[3],
-                    inner_config,
-                    circuit_config,
-                )?
-                .0,
-                recursively_verify_stark_proof(
-                    Table::Memory,
-                    all_stark.memory_stark,
-                    &all_proof.stark_proofs[Table::Memory as usize],
-                    &all_stark.cross_table_lookups,
-                    &ctl_challenges,
-                    states[4],
-                    inner_config,
-                    circuit_config,
-                )?
-                .0,
-            ],
-        })
-    }
+    Ok(())
 }

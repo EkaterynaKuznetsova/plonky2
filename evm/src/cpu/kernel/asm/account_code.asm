@@ -1,6 +1,26 @@
-retzero:
-    %stack (account_ptr, retdest) -> (retdest, 0)
-    JUMP
+global sys_extcodehash:
+    // stack: kexit_info, address
+    SWAP1 %u256_to_addr
+    // stack: address, kexit_info
+    SWAP1
+    DUP2 %insert_accessed_addresses
+    // stack: cold_access, kexit_info, address
+    PUSH @GAS_COLDACCOUNTACCESS_MINUS_WARMACCESS
+    MUL
+    PUSH @GAS_WARMACCESS
+    ADD
+    %charge_gas
+    // stack: kexit_info, address
+
+    SWAP1
+    DUP1 %is_dead %jumpi(extcodehash_dead)
+    %extcodehash
+    // stack: hash, kexit_info
+    SWAP1
+    EXIT_KERNEL
+extcodehash_dead:
+    %stack (address, kexit_info) -> (kexit_info, 0)
+    EXIT_KERNEL
 
 global extcodehash:
     // stack: address, retdest
@@ -12,128 +32,105 @@ global extcodehash:
     %mload_trie_data
     // stack: codehash, retdest
     SWAP1 JUMP
+retzero:
+    %stack (account_ptr, retdest) -> (retdest, 0)
+    JUMP
 
-
-%macro codesize
-    // stack: (empty)
-    %address
-    %extcodesize
-%endmacro
-
-%macro extcodesize
-    %stack (address) -> (address, 0, @SEGMENT_KERNEL_ACCOUNT_CODE, %%after)
-    %jump(load_code)
+%macro extcodehash
+    %stack (address) -> (address, %%after)
+    %jump(extcodehash)
 %%after:
 %endmacro
 
-global extcodesize:
-    // stack: address, retdest
-    %extcodesize
-    // stack: extcodesize(address), retdest
-    SWAP1 JUMP
-
-
-%macro codecopy
-    // stack: dest_offset, offset, size, retdest
-    %address
-    // stack: address, dest_offset, offset, size, retdest
-    %jump(extcodecopy)
+%macro ext_code_empty
+    %extcodehash
+    %eq_const(@EMPTY_STRING_HASH)
 %endmacro
 
-// Pre stack: address, dest_offset, offset, size, retdest
-// Post stack: (empty)
-global extcodecopy:
-    // stack: address, dest_offset, offset, size, retdest
-    %stack (address, dest_offset, offset, size, retdest)
-        -> (address, 0, @SEGMENT_KERNEL_ACCOUNT_CODE, extcodecopy_contd, size, offset, dest_offset, retdest)
+%macro extcodesize
+    %stack (address) -> (address, %%after)
+    %jump(extcodesize)
+%%after:
+%endmacro
+
+global sys_extcodesize:
+    // stack: kexit_info, address
+    SWAP1 %u256_to_addr
+    // stack: address, kexit_info
+    SWAP1
+    DUP2 %insert_accessed_addresses
+    // stack: cold_access, kexit_info, address
+    PUSH @GAS_COLDACCOUNTACCESS_MINUS_WARMACCESS
+    MUL
+    PUSH @GAS_WARMACCESS
+    ADD
+    %charge_gas
+    // stack: kexit_info, address
+
+    SWAP1
+    // stack: address, kexit_info
+    %extcodesize
+    // stack: code_size, kexit_info
+    SWAP1
+    EXIT_KERNEL
+
+global extcodesize:
+    // stack: address, retdest
+    %next_context_id
+    // stack: codesize_ctx, address, retdest
+    SWAP1
+    // stack: address, codesize_ctx, retdest
     %jump(load_code)
 
-extcodecopy_contd:
-    // stack: code_length, size, offset, dest_offset, retdest
-    SWAP1
-    // stack: size, code_length, offset, dest_offset, retdest
-    PUSH 0
-
-// Loop copying the `code[offset]` to `memory[dest_offset]` until `i==size`.
-// Each iteration increments `offset, dest_offset, i`.
-// TODO: Consider implementing this with memcpy.
-extcodecopy_loop:
-    // stack: i, size, code_length, offset, dest_offset, retdest
-    DUP2 DUP2 EQ
-    // stack: i == size, i, size, code_length, offset, dest_offset, retdest
-    %jumpi(extcodecopy_end)
-    %stack (i, size, code_length, offset, dest_offset, retdest)
-        -> (offset, code_length, offset, code_length, dest_offset, i, size, retdest)
-    LT
-    // stack: offset < code_length, offset, code_length, dest_offset, i, size, retdest
-    DUP2
-    // stack: offset, offset < code_length, offset, code_length, dest_offset, i, size, retdest
-    %mload_current(@SEGMENT_KERNEL_ACCOUNT_CODE)
-    // stack: opcode, offset < code_length, offset, code_length, dest_offset, i, size, retdest
-    %stack (opcode, offset_lt_code_length, offset, code_length, dest_offset, i, size, retdest)
-        -> (offset_lt_code_length, 0, opcode, offset, code_length, dest_offset, i, size, retdest)
-    // If `offset >= code_length`, use `opcode=0`. Necessary since `SEGMENT_KERNEL_ACCOUNT_CODE` might be clobbered from previous calls.
-    %select_bool
-    // stack: opcode, offset, code_length, dest_offset, i, size, retdest
-    DUP4
-    // stack: dest_offset, opcode, offset, code_length, dest_offset, i, size, retdest
-    %mstore_main
-    // stack: offset, code_length, dest_offset, i, size, retdest
-    %increment
-    // stack: offset+1, code_length, dest_offset, i, size, retdest
-    SWAP2
-    // stack: dest_offset, code_length, offset+1, i, size, retdest
-    %increment
-    // stack: dest_offset+1, code_length, offset+1, i, size, retdest
-    SWAP3
-    // stack: i, code_length, offset+1, dest_offset+1, size, retdest
-    %increment
-    // stack: i+1, code_length, offset+1, dest_offset+1, size, retdest
-    %stack (i, code_length, offset, dest_offset, size, retdest) -> (i, size, code_length, offset, dest_offset, retdest)
-    %jump(extcodecopy_loop)
-
-extcodecopy_end:
-    %stack (i, size, code_length, offset, dest_offset, retdest) -> (retdest)
-    JUMP
-
-
-// Loads the code at `address` into memory, at the given context and segment, starting at offset 0.
+// Loads the code at `address` into memory, in the code segment of the given context, starting at offset 0.
 // Checks that the hash of the loaded code corresponds to the `codehash` in the state trie.
-// Pre stack: address, ctx, segment, retdest
-// Post stack: code_len
+// Pre stack: address, ctx, retdest
+// Post stack: code_size
+//
+// NOTE: The provided `dest` **MUST** have a virtual address of 0.
 global load_code:
-    %stack (address, ctx, segment, retdest) -> (extcodehash, address, load_code_ctd, ctx, segment, retdest)
+    %stack (address, ctx, retdest) -> (extcodehash, address, load_code_ctd, ctx, retdest)
     JUMP
 load_code_ctd:
-    // stack: codehash, ctx, segment, retdest
-    PROVER_INPUT(account_code::length)
-    // stack: code_length, codehash, ctx, segment, retdest
-    PUSH 0
-
-// Loop non-deterministically querying `code[i]` and storing it in `SEGMENT_KERNEL_ACCOUNT_CODE` at offset `i`, until `i==code_length`.
-load_code_loop:
-    // stack: i, code_length, codehash, ctx, segment, retdest
-    DUP2 DUP2 EQ
-    // stack: i == code_length, i, code_length, codehash, ctx, segment, retdest
-    %jumpi(load_code_check)
-    PROVER_INPUT(account_code::get)
-    // stack: opcode, i, code_length, codehash, ctx, segment, retdest
-    DUP2
-    // stack: i, opcode, i, code_length, codehash, ctx, segment, retdest
-    DUP7 // segment
-    DUP7 // context
-    MSTORE_GENERAL
-    // stack: i, code_length, codehash, ctx, segment, retdest
-    %increment
-    // stack: i+1, code_length, codehash, ctx, segment, retdest
-    %jump(load_code_loop)
-
-// Check that the hash of the loaded code equals `codehash`.
-load_code_check:
-    // stack: i, code_length, codehash, ctx, segment, retdest
-    %stack (i, code_length, codehash, ctx, segment, retdest)
-        -> (ctx, segment, 0, code_length, codehash, retdest, code_length)
+    // stack: codehash, ctx, retdest
+    DUP1 ISZERO %jumpi(load_code_non_existent_account)
+    // Load the code non-deterministically in memory and return the length.
+    PROVER_INPUT(account_code)
+    %stack (code_size, codehash, ctx, retdest) -> (ctx, code_size, codehash, retdest, code_size)
+    // Check that the hash of the loaded code equals `codehash`.
+    // ctx == DST, as SEGMENT_CODE == offset == 0.
     KECCAK_GENERAL
-    // stack: shouldbecodehash, codehash, retdest, code_length
+    // stack: shouldbecodehash, codehash, retdest, code_size
     %assert_eq
+    // stack: retdest, code_size
+    JUMP
+
+load_code_non_existent_account:
+    // Write 0 at address 0 for soundness: SEGMENT_CODE == 0, hence ctx == addr.
+    // stack: codehash, addr, retdest
+    %stack (codehash, addr, retdest) -> (0, addr, retdest, 0)
+    MSTORE_GENERAL
+    // stack: retdest, 0
+    JUMP
+
+// Identical to load_code, but adds 33 zeros after code_size for soundness reasons.
+// If the code ends with an incomplete PUSH, we must make sure that every subsequent read is 0,
+// accordingly to the Ethereum specs.
+// Pre stack: address, ctx, retdest
+// Post stack: code_size
+global load_code_padded:
+    %stack (address, ctx, retdest) -> (address, ctx, load_code_padded_ctd, ctx, retdest)
+    %jump(load_code)
+
+load_code_padded_ctd:
+    // SEGMENT_CODE == 0.
+    // stack: code_size, ctx, retdest
+    %stack (code_size, ctx, retdest) -> (ctx, code_size, 0, retdest, code_size)
+    ADD 
+    // stack: addr, 0, retdest, code_size
+    MSTORE_32BYTES_32
+    // stack: addr', retdest, code_size
+    PUSH 0
+    MSTORE_GENERAL
+    // stack: retdest, code_size
     JUMP

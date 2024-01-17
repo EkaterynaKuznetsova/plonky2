@@ -92,7 +92,7 @@ impl<F: RichField> GenericHashOut<F> for HashOut<F> {
         HashOut {
             elements: bytes
                 .chunks(8)
-                .take(4)
+                .take(NUM_HASH_OUT_ELTS)
                 .map(|x| F::from_canonical_u64(u64::from_le_bytes(x.try_into().unwrap())))
                 .collect::<Vec<_>>()
                 .try_into()
@@ -150,7 +150,7 @@ impl TryFrom<&[Target]> for HashOutTarget {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MerkleCapTarget(pub Vec<HashOutTarget>);
 
 /// Hash consisting of a byte array.

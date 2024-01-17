@@ -7,16 +7,16 @@ use plonky2::field::extension::{Extendable, FieldExtension};
 use plonky2::field::types::Field;
 use plonky2::fri::verifier::verify_fri_proof;
 use plonky2::hash::hash_types::RichField;
-use plonky2::plonk::config::{GenericConfig, Hasher};
+use plonky2::plonk::config::GenericConfig;
 use plonky2::plonk::plonk_common::reduce_with_powers;
 
 use crate::config::StarkConfig;
 use crate::constraint_consumer::ConstraintConsumer;
+use crate::evaluation_frame::StarkEvaluationFrame;
 use crate::permutation::PermutationCheckVars;
 use crate::proof::{StarkOpeningSet, StarkProof, StarkProofChallenges, StarkProofWithPublicInputs};
 use crate::stark::Stark;
 use crate::vanishing_poly::eval_vanishing_poly;
-use crate::vars::StarkEvaluationVars;
 
 pub fn verify_stark_proof<
     F: RichField + Extendable<D>,
@@ -27,12 +27,7 @@ pub fn verify_stark_proof<
     stark: S,
     proof_with_pis: StarkProofWithPublicInputs<F, C, D>,
     config: &StarkConfig,
-) -> Result<()>
-where
-    [(); S::COLUMNS]:,
-    [(); S::PUBLIC_INPUTS]:,
-    [(); C::Hasher::HASH_SIZE]:,
-{
+) -> Result<()> {
     ensure!(proof_with_pis.public_inputs.len() == S::PUBLIC_INPUTS);
     let degree_bits = proof_with_pis.proof.recover_degree_bits(config);
     let challenges = proof_with_pis.get_challenges(&stark, config, degree_bits);
@@ -50,12 +45,7 @@ pub(crate) fn verify_stark_proof_with_challenges<
     challenges: StarkProofChallenges<F, D>,
     degree_bits: usize,
     config: &StarkConfig,
-) -> Result<()>
-where
-    [(); S::COLUMNS]:,
-    [(); S::PUBLIC_INPUTS]:,
-    [(); C::Hasher::HASH_SIZE]:,
-{
+) -> Result<()> {
     validate_proof_shape(&stark, &proof_with_pis, config)?;
     check_permutation_options(&stark, &proof_with_pis, &challenges)?;
     let StarkProofWithPublicInputs {
@@ -69,17 +59,15 @@ where
         permutation_zs_next,
         quotient_polys,
     } = &proof.openings;
-    let vars = StarkEvaluationVars {
-        local_values: &local_values.to_vec().try_into().unwrap(),
-        next_values: &next_values.to_vec().try_into().unwrap(),
-        public_inputs: &public_inputs
-            .into_iter()
+    let vars = S::EvaluationFrame::from_values(
+        local_values,
+        next_values,
+        &public_inputs
+            .iter()
+            .copied()
             .map(F::Extension::from_basefield)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap(),
-    };
-
+            .collect::<Vec<_>>(),
+    );
     let (l_0, l_last) = eval_l_0_and_l_last(degree_bits, challenges.stark_zeta);
     let last = F::primitive_root_of_unity(degree_bits).inverse();
     let z_last = challenges.stark_zeta - last.into();
@@ -98,10 +86,10 @@ where
         next_zs: permutation_zs_next.as_ref().unwrap().clone(),
         permutation_challenge_sets: challenges.permutation_challenge_sets.unwrap(),
     });
-    eval_vanishing_poly::<F, F::Extension, F::Extension, C, S, D, D>(
+    eval_vanishing_poly::<F, F::Extension, F::Extension, S, D, D>(
         &stark,
         config,
-        vars,
+        &vars,
         permutation_data,
         &mut consumer,
     );
@@ -155,8 +143,6 @@ where
     F: RichField + Extendable<D>,
     C: GenericConfig<D, F = F>,
     S: Stark<F, D>,
-    [(); S::COLUMNS]:,
-    [(); C::Hasher::HASH_SIZE]:,
 {
     let StarkProofWithPublicInputs {
         proof,

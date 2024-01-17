@@ -9,11 +9,21 @@ use crate::iop::target::Target;
 use crate::plonk::circuit_builder::CircuitBuilder;
 
 /// `Target`s representing an element of an extension field.
+///
+/// This is typically used in recursion settings, where the outer circuit must verify
+/// a proof satisfying an inner circuit's statement, which is verified using arithmetic
+/// in an extension of the base field.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct ExtensionTarget<const D: usize>(pub [Target; D]);
 
+impl<const D: usize> Default for ExtensionTarget<D> {
+    fn default() -> Self {
+        Self([Target::default(); D])
+    }
+}
+
 impl<const D: usize> ExtensionTarget<D> {
-    pub fn to_target_array(&self) -> [Target; D] {
+    pub const fn to_target_array(&self) -> [Target; D] {
         self.0
     }
 
@@ -71,7 +81,7 @@ impl<const D: usize> TryFrom<Vec<Target>> for ExtensionTarget<D> {
 pub struct ExtensionAlgebraTarget<const D: usize>(pub [ExtensionTarget<D>; D]);
 
 impl<const D: usize> ExtensionAlgebraTarget<D> {
-    pub fn to_ext_target_array(&self) -> [ExtensionTarget<D>; D] {
+    pub const fn to_ext_target_array(&self) -> [ExtensionTarget<D>; D] {
         self.0
     }
 }
@@ -139,9 +149,7 @@ pub fn flatten_target<const D: usize>(l: &[ExtensionTarget<D>]) -> Vec<Target> {
 }
 
 /// Batch every D-sized chunks into extension targets.
-pub fn unflatten_target<F: RichField + Extendable<D>, const D: usize>(
-    l: &[Target],
-) -> Vec<ExtensionTarget<D>> {
+pub fn unflatten_target<const D: usize>(l: &[Target]) -> Vec<ExtensionTarget<D>> {
     debug_assert_eq!(l.len() % D, 0);
     l.chunks_exact(D)
         .map(|c| c.to_vec().try_into().unwrap())

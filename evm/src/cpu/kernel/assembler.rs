@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::fs;
+use std::time::Instant;
 
-use ethereum_types::U256;
+use ethereum_types::{H256, U256};
 use itertools::{izip, Itertools};
 use keccak_hash::keccak;
 use log::debug;
+use serde::{Deserialize, Serialize};
 
-use super::ast::PushTarget;
+use super::ast::{BytesTarget, PushTarget};
 use crate::cpu::kernel::ast::Item::LocalLabelDeclaration;
 use crate::cpu::kernel::ast::{File, Item, StackReplacement};
 use crate::cpu::kernel::opcodes::{get_opcode, get_push_opcode};
@@ -19,13 +22,12 @@ use crate::generation::prover_input::ProverInputFn;
 /// nontrivial given the circular dependency between an offset and its size.
 pub(crate) const BYTES_PER_OFFSET: u8 = 3;
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Kernel {
     pub(crate) code: Vec<u8>,
 
-    /// Computed using `hash_kernel`. It is encoded as `u32` limbs for convenience, since we deal
-    /// with `u32` limbs in our Keccak table.
-    pub(crate) code_hash: [u32; 8],
+    /// Computed using `hash_kernel`.
+    pub(crate) code_hash: H256,
 
     pub(crate) global_labels: HashMap<String, usize>,
     pub(crate) ordered_labels: Vec<String>,
@@ -40,14 +42,12 @@ impl Kernel {
         global_labels: HashMap<String, usize>,
         prover_inputs: HashMap<usize, ProverInputFn>,
     ) -> Self {
-        let code_hash_bytes = keccak(&code).0;
-        let code_hash = std::array::from_fn(|i| {
-            u32::from_le_bytes(std::array::from_fn(|j| code_hash_bytes[i * 4 + j]))
-        });
+        let code_hash = keccak(&code);
         let ordered_labels = global_labels
             .keys()
             .cloned()
             .sorted_by_key(|label| global_labels[label])
+            .inspect(|key| debug!("Global label: {} => {:?}", key, global_labels[key]))
             .collect();
         Self {
             code,
@@ -56,6 +56,16 @@ impl Kernel {
             ordered_labels,
             prover_inputs,
         }
+    }
+
+    pub fn to_file(&self, path: &str) {
+        let kernel_serialized = serde_json::to_string(self).unwrap();
+        fs::write(path, kernel_serialized).expect("Unable to write kernel to file");
+    }
+
+    pub fn from_file(path: &str) -> Self {
+        let bytes = fs::read(path).expect("Unable to read kernel file");
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     /// Get a string representation of the current offset for debugging purposes.
@@ -110,6 +120,7 @@ pub(crate) fn assemble(
     let mut local_labels = Vec::with_capacity(files.len());
     let mut macro_counter = 0;
     for file in files {
+        let start = Instant::now();
         let mut file = file.body;
         file = expand_macros(file, &macros, &mut macro_counter);
         file = inline_constants(file, &constants);
@@ -124,6 +135,7 @@ pub(crate) fn assemble(
             &mut prover_inputs,
         ));
         expanded_files.push(file);
+        debug!("Expanding file took {:?}", start.elapsed());
     }
     let mut code = vec![];
     for (file, locals) in izip!(expanded_files, local_labels) {
@@ -133,6 +145,7 @@ pub(crate) fn assemble(
         debug!("Assembled file size: {} bytes", file_len);
     }
     assert_eq!(code.len(), offset, "Code length doesn't match offset.");
+    debug!("Total kernel size: {} bytes", code.len());
     Kernel::new(code, global_labels, prover_inputs)
 }
 
@@ -259,6 +272,23 @@ fn inline_constants(body: Vec<Item>, constants: &HashMap<String, U256>) -> Vec<I
         .map(|item| {
             if let Item::Push(PushTarget::Constant(c)) = item {
                 Item::Push(PushTarget::Literal(resolve_const(c)))
+            } else if let Item::Bytes(targets) = item {
+                let targets = targets
+                    .into_iter()
+                    .map(|target| {
+                        if let BytesTarget::Constant(c) = target {
+                            let c = resolve_const(c);
+                            assert!(
+                                c < U256::from(256),
+                                "Constant in a BYTES object should be a byte"
+                            );
+                            BytesTarget::Literal(c.byte(0))
+                        } else {
+                            target
+                        }
+                    })
+                    .collect();
+                Item::Bytes(targets)
             } else if let Item::StackManipulation(from, to) = item {
                 let to = to
                     .into_iter()
@@ -369,7 +399,14 @@ fn assemble_file(
             Item::StandardOp(opcode) => {
                 code.push(get_opcode(&opcode));
             }
-            Item::Bytes(bytes) => code.extend(bytes),
+            Item::Bytes(targets) => {
+                for target in targets {
+                    match target {
+                        BytesTarget::Literal(n) => code.push(n),
+                        BytesTarget::Constant(c) => panic!("Constant wasn't inlined: {c}"),
+                    }
+                }
+            }
             Item::Jumptable(labels) => {
                 for label in labels {
                     let bytes = look_up_label(&label, &local_labels, global_labels);
@@ -489,7 +526,10 @@ mod tests {
     #[test]
     fn literal_bytes() {
         let file = File {
-            body: vec![Item::Bytes(vec![0x12, 42]), Item::Bytes(vec![0xFE, 255])],
+            body: vec![
+                Item::Bytes(vec![BytesTarget::Literal(0x12), BytesTarget::Literal(42)]),
+                Item::Bytes(vec![BytesTarget::Literal(0xFE), BytesTarget::Literal(255)]),
+            ],
         };
         let code = assemble(vec![file], HashMap::new(), false).code;
         assert_eq!(code, vec![0x12, 42, 0xfe, 255]);

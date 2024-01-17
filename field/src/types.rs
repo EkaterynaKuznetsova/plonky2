@@ -75,7 +75,6 @@ pub trait Field:
     const ONE: Self;
     const TWO: Self;
     const NEG_ONE: Self;
-    const MONTGOMERY_INV: Self;
 
     /// The 2-adicity of this field's multiplicative group.
     const TWO_ADICITY: usize;
@@ -83,8 +82,6 @@ pub trait Field:
     /// The field's characteristic and it's 2-adicity.
     /// Set to `None` when the characteristic doesn't fit in a u64.
     const CHARACTERISTIC_TWO_ADICITY: usize;
-
-    const NONRESIDUE: Self;
 
     /// Generator of the entire multiplicative group, i.e. all non-zero elements.
     const MULTIPLICATIVE_GROUP_GENERATOR: Self;
@@ -125,8 +122,6 @@ pub trait Field:
     fn triple(&self) -> Self {
         *self * (Self::ONE + Self::TWO)
     }
-
-    fn mul_by_nonresidue(&self) -> Self;
 
     /// Compute the multiplicative inverse of this field element.
     fn try_inverse(&self) -> Option<Self>;
@@ -346,6 +341,12 @@ pub trait Field:
     /// Returns `n % Self::characteristic()`.
     fn from_noncanonical_u128(n: u128) -> Self;
 
+    /// Returns `x % Self::CHARACTERISTIC`.
+    fn from_noncanonical_u64(n: u64) -> Self;
+
+    /// Returns `n` as an element of this field.
+    fn from_noncanonical_i64(n: i64) -> Self;
+
     /// Returns `n % Self::characteristic()`. May be cheaper than from_noncanonical_u128 when we know
     /// that `n < 2 ** 96`.
     #[inline]
@@ -505,14 +506,6 @@ pub trait PrimeField: Field {
 /// A finite field of order less than 2^64.
 pub trait Field64: Field {
     const ORDER: u64;
-
-    /// Returns `x % Self::CHARACTERISTIC`.
-    // TODO: Move to `Field`.
-    fn from_noncanonical_u64(n: u64) -> Self;
-
-    /// Returns `n` as an element of this field.
-    // TODO: Move to `Field`.
-    fn from_noncanonical_i64(n: i64) -> Self;
 
     /// Returns `n` as an element of this field. Assumes that `0 <= n < Self::ORDER`.
     // TODO: Move to `Field`.

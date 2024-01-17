@@ -82,12 +82,14 @@ impl Default for Avx2GoldilocksField {
 
 impl Div<GoldilocksField> for Avx2GoldilocksField {
     type Output = Self;
+    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
     fn div(self, rhs: GoldilocksField) -> Self {
         self * rhs.inverse()
     }
 }
 impl DivAssign<GoldilocksField> for Avx2GoldilocksField {
+    #[allow(clippy::suspicious_op_assign_impl)]
     #[inline]
     fn div_assign(&mut self, rhs: GoldilocksField) {
         *self *= rhs.inverse();
@@ -156,16 +158,6 @@ unsafe impl PackedField for Avx2GoldilocksField {
 
     const ZEROS: Self = Self([GoldilocksField::ZERO; 4]);
     const ONES: Self = Self([GoldilocksField::ONE; 4]);
-
-    #[inline]
-    fn from_arr(arr: [Self::Scalar; Self::WIDTH]) -> Self {
-        Self(arr)
-    }
-
-    #[inline]
-    fn as_arr(&self) -> [Self::Scalar; Self::WIDTH] {
-        self.0
-    }
 
     #[inline]
     fn from_slice(slice: &[Self::Scalar]) -> &Self {
@@ -328,8 +320,7 @@ unsafe fn add_no_double_overflow_64_64s_s(x: __m256i, y_s: __m256i) -> __m256i {
     let res_wrapped_s = _mm256_add_epi64(x, y_s);
     let mask = _mm256_cmpgt_epi64(y_s, res_wrapped_s); // -1 if overflowed else 0.
     let wrapback_amt = _mm256_srli_epi64::<32>(mask); // -FIELD_ORDER if overflowed else 0.
-    let res_s = _mm256_add_epi64(res_wrapped_s, wrapback_amt);
-    res_s
+    _mm256_add_epi64(res_wrapped_s, wrapback_amt)
 }
 
 #[inline]
@@ -347,8 +338,7 @@ unsafe fn sub(x: __m256i, y: __m256i) -> __m256i {
     let mask = _mm256_cmpgt_epi64(y_s, x_s); // -1 if sub will underflow (y > x) else 0.
     let wrapback_amt = _mm256_srli_epi64::<32>(mask); // -FIELD_ORDER if underflow else 0.
     let res_wrapped = _mm256_sub_epi64(x_s, y_s);
-    let res = _mm256_sub_epi64(res_wrapped, wrapback_amt);
-    res
+    _mm256_sub_epi64(res_wrapped, wrapback_amt)
 }
 
 #[inline]
@@ -435,10 +425,9 @@ unsafe fn add_small_64s_64_s(x_s: __m256i, y: __m256i) -> __m256i {
     // 0xffffffff and the addition of the low 32 bits generated a carry. This can never occur if y
     // <= 0xffffffff00000000: if y >> 32 = 0xffffffff, then no carry can occur.
     let mask = _mm256_cmpgt_epi32(x_s, res_wrapped_s); // -1 if overflowed else 0.
-                                                       // The mask contains 0xffffffff in the high 32 bits if wraparound occured and 0 otherwise.
+                                                       // The mask contains 0xffffffff in the high 32 bits if wraparound occurred and 0 otherwise.
     let wrapback_amt = _mm256_srli_epi64::<32>(mask); // -FIELD_ORDER if overflowed else 0.
-    let res_s = _mm256_add_epi64(res_wrapped_s, wrapback_amt);
-    res_s
+    _mm256_add_epi64(res_wrapped_s, wrapback_amt)
 }
 
 /// Goldilocks subtraction of a "small" number. `x_s` is pre-shifted by 2**63. `y` is assumed to be
@@ -452,10 +441,9 @@ unsafe fn sub_small_64s_64_s(x_s: __m256i, y: __m256i) -> __m256i {
     // 0xffffffff and the subtraction of the low 32 bits generated a borrow. This can never occur if
     // y <= 0xffffffff00000000: if y >> 32 = 0xffffffff, then no borrow can occur.
     let mask = _mm256_cmpgt_epi32(res_wrapped_s, x_s); // -1 if underflowed else 0.
-                                                       // The mask contains 0xffffffff in the high 32 bits if wraparound occured and 0 otherwise.
+                                                       // The mask contains 0xffffffff in the high 32 bits if wraparound occurred and 0 otherwise.
     let wrapback_amt = _mm256_srli_epi64::<32>(mask); // -FIELD_ORDER if underflowed else 0.
-    let res_s = _mm256_sub_epi64(res_wrapped_s, wrapback_amt);
-    res_s
+    _mm256_sub_epi64(res_wrapped_s, wrapback_amt)
 }
 
 #[inline]
@@ -466,8 +454,7 @@ unsafe fn reduce128(x: (__m256i, __m256i)) -> __m256i {
     let lo1_s = sub_small_64s_64_s(lo0_s, hi_hi0);
     let t1 = _mm256_mul_epu32(hi0, EPSILON);
     let lo2_s = add_small_64s_64_s(lo1_s, t1);
-    let lo2 = shift(lo2_s);
-    lo2
+    shift(lo2_s)
 }
 
 /// Multiply two integers modulo FIELD_ORDER.
@@ -515,7 +502,7 @@ mod tests {
     use crate::goldilocks_field::GoldilocksField;
     use crate::ops::Square;
     use crate::packed::PackedField;
-    use crate::types::Field64;
+    use crate::types::Field;
 
     fn test_vals_a() -> [GoldilocksField; 4] {
         [
@@ -539,13 +526,13 @@ mod tests {
         let a_arr = test_vals_a();
         let b_arr = test_vals_b();
 
-        let packed_a = Avx2GoldilocksField::from_arr(a_arr);
-        let packed_b = Avx2GoldilocksField::from_arr(b_arr);
+        let packed_a = *Avx2GoldilocksField::from_slice(&a_arr);
+        let packed_b = *Avx2GoldilocksField::from_slice(&b_arr);
         let packed_res = packed_a + packed_b;
-        let arr_res = packed_res.as_arr();
+        let arr_res = packed_res.as_slice();
 
         let expected = a_arr.iter().zip(b_arr).map(|(&a, b)| a + b);
-        for (exp, res) in expected.zip(arr_res) {
+        for (exp, &res) in expected.zip(arr_res) {
             assert_eq!(res, exp);
         }
     }
@@ -555,13 +542,13 @@ mod tests {
         let a_arr = test_vals_a();
         let b_arr = test_vals_b();
 
-        let packed_a = Avx2GoldilocksField::from_arr(a_arr);
-        let packed_b = Avx2GoldilocksField::from_arr(b_arr);
+        let packed_a = *Avx2GoldilocksField::from_slice(&a_arr);
+        let packed_b = *Avx2GoldilocksField::from_slice(&b_arr);
         let packed_res = packed_a * packed_b;
-        let arr_res = packed_res.as_arr();
+        let arr_res = packed_res.as_slice();
 
         let expected = a_arr.iter().zip(b_arr).map(|(&a, b)| a * b);
-        for (exp, res) in expected.zip(arr_res) {
+        for (exp, &res) in expected.zip(arr_res) {
             assert_eq!(res, exp);
         }
     }
@@ -570,12 +557,12 @@ mod tests {
     fn test_square() {
         let a_arr = test_vals_a();
 
-        let packed_a = Avx2GoldilocksField::from_arr(a_arr);
+        let packed_a = *Avx2GoldilocksField::from_slice(&a_arr);
         let packed_res = packed_a.square();
-        let arr_res = packed_res.as_arr();
+        let arr_res = packed_res.as_slice();
 
         let expected = a_arr.iter().map(|&a| a.square());
-        for (exp, res) in expected.zip(arr_res) {
+        for (exp, &res) in expected.zip(arr_res) {
             assert_eq!(res, exp);
         }
     }
@@ -584,12 +571,12 @@ mod tests {
     fn test_neg() {
         let a_arr = test_vals_a();
 
-        let packed_a = Avx2GoldilocksField::from_arr(a_arr);
+        let packed_a = *Avx2GoldilocksField::from_slice(&a_arr);
         let packed_res = -packed_a;
-        let arr_res = packed_res.as_arr();
+        let arr_res = packed_res.as_slice();
 
         let expected = a_arr.iter().map(|&a| -a);
-        for (exp, res) in expected.zip(arr_res) {
+        for (exp, &res) in expected.zip(arr_res) {
             assert_eq!(res, exp);
         }
     }
@@ -599,13 +586,13 @@ mod tests {
         let a_arr = test_vals_a();
         let b_arr = test_vals_b();
 
-        let packed_a = Avx2GoldilocksField::from_arr(a_arr);
-        let packed_b = Avx2GoldilocksField::from_arr(b_arr);
+        let packed_a = *Avx2GoldilocksField::from_slice(&a_arr);
+        let packed_b = *Avx2GoldilocksField::from_slice(&b_arr);
         let packed_res = packed_a - packed_b;
-        let arr_res = packed_res.as_arr();
+        let arr_res = packed_res.as_slice();
 
         let expected = a_arr.iter().zip(b_arr).map(|(&a, b)| a - b);
-        for (exp, res) in expected.zip(arr_res) {
+        for (exp, &res) in expected.zip(arr_res) {
             assert_eq!(res, exp);
         }
     }
@@ -615,29 +602,30 @@ mod tests {
         let a_arr = test_vals_a();
         let b_arr = test_vals_b();
 
-        let packed_a = Avx2GoldilocksField::from_arr(a_arr);
-        let packed_b = Avx2GoldilocksField::from_arr(b_arr);
+        let packed_a = *Avx2GoldilocksField::from_slice(&a_arr);
+        let packed_b = *Avx2GoldilocksField::from_slice(&b_arr);
         {
             // Interleave, then deinterleave.
             let (x, y) = packed_a.interleave(packed_b, 1);
             let (res_a, res_b) = x.interleave(y, 1);
-            assert_eq!(res_a.as_arr(), a_arr);
-            assert_eq!(res_b.as_arr(), b_arr);
+            assert_eq!(res_a.as_slice(), a_arr);
+            assert_eq!(res_b.as_slice(), b_arr);
         }
         {
             let (x, y) = packed_a.interleave(packed_b, 2);
             let (res_a, res_b) = x.interleave(y, 2);
-            assert_eq!(res_a.as_arr(), a_arr);
-            assert_eq!(res_b.as_arr(), b_arr);
+            assert_eq!(res_a.as_slice(), a_arr);
+            assert_eq!(res_b.as_slice(), b_arr);
         }
         {
             let (x, y) = packed_a.interleave(packed_b, 4);
             let (res_a, res_b) = x.interleave(y, 4);
-            assert_eq!(res_a.as_arr(), a_arr);
-            assert_eq!(res_b.as_arr(), b_arr);
+            assert_eq!(res_a.as_slice(), a_arr);
+            assert_eq!(res_b.as_slice(), b_arr);
         }
     }
 
+    #[allow(clippy::zero_prefixed_literal)]
     #[test]
     fn test_interleave() {
         let in_a: [GoldilocksField; 4] = [
@@ -677,22 +665,22 @@ mod tests {
             GoldilocksField::from_noncanonical_u64(13),
         ];
 
-        let packed_a = Avx2GoldilocksField::from_arr(in_a);
-        let packed_b = Avx2GoldilocksField::from_arr(in_b);
+        let packed_a = *Avx2GoldilocksField::from_slice(&in_a);
+        let packed_b = *Avx2GoldilocksField::from_slice(&in_b);
         {
             let (x1, y1) = packed_a.interleave(packed_b, 1);
-            assert_eq!(x1.as_arr(), int1_a);
-            assert_eq!(y1.as_arr(), int1_b);
+            assert_eq!(x1.as_slice(), int1_a);
+            assert_eq!(y1.as_slice(), int1_b);
         }
         {
             let (x2, y2) = packed_a.interleave(packed_b, 2);
-            assert_eq!(x2.as_arr(), int2_a);
-            assert_eq!(y2.as_arr(), int2_b);
+            assert_eq!(x2.as_slice(), int2_a);
+            assert_eq!(y2.as_slice(), int2_b);
         }
         {
             let (x4, y4) = packed_a.interleave(packed_b, 4);
-            assert_eq!(x4.as_arr(), in_a);
-            assert_eq!(y4.as_arr(), in_b);
+            assert_eq!(x4.as_slice(), in_a);
+            assert_eq!(y4.as_slice(), in_b);
         }
     }
 }

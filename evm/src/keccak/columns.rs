@@ -4,7 +4,7 @@ use crate::cross_table_lookup::Column;
 use crate::keccak::keccak_stark::{NUM_INPUTS, NUM_ROUNDS};
 
 /// A register which is set to 1 if we are in the `i`th round, otherwise 0.
-pub const fn reg_step(i: usize) -> usize {
+pub(crate) const fn reg_step(i: usize) -> usize {
     debug_assert!(i < NUM_ROUNDS);
     i
 }
@@ -12,7 +12,7 @@ pub const fn reg_step(i: usize) -> usize {
 /// Registers to hold permutation inputs.
 /// `reg_input_limb(2*i) -> input[i] as u32`
 /// `reg_input_limb(2*i+1) -> input[i] >> 32`
-pub fn reg_input_limb<F: Field>(i: usize) -> Column<F> {
+pub(crate) fn reg_input_limb<F: Field>(i: usize) -> Column<F> {
     debug_assert!(i < 2 * NUM_INPUTS);
     let i_u64 = i / 2; // The index of the 64-bit chunk.
 
@@ -28,7 +28,7 @@ pub fn reg_input_limb<F: Field>(i: usize) -> Column<F> {
 /// Registers to hold permutation outputs.
 /// `reg_output_limb(2*i) -> output[i] as u32`
 /// `reg_output_limb(2*i+1) -> output[i] >> 32`
-pub const fn reg_output_limb(i: usize) -> usize {
+pub(crate) const fn reg_output_limb(i: usize) -> usize {
     debug_assert!(i < 2 * NUM_INPUTS);
     let i_u64 = i / 2; // The index of the 64-bit chunk.
 
@@ -48,7 +48,11 @@ const R: [[u8; 5]; 5] = [
     [27, 20, 39, 8, 14],
 ];
 
-const START_A: usize = NUM_ROUNDS;
+/// Column holding the timestamp, used to link inputs and outputs
+/// in the `KeccakSpongeStark`.
+pub(crate) const TIMESTAMP: usize = NUM_ROUNDS;
+
+const START_A: usize = TIMESTAMP + 1;
 pub(crate) const fn reg_a(x: usize, y: usize) -> usize {
     debug_assert!(x < 5);
     debug_assert!(y < 5);

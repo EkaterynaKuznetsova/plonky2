@@ -1,7 +1,6 @@
 use crate::field::extension::Extendable;
-use crate::hash::hash_types::{HashOutTarget, RichField};
-use crate::hash::hashing::SPONGE_WIDTH;
-use crate::iop::target::{BoolTarget, Target};
+use crate::hash::hash_types::RichField;
+use crate::iop::target::BoolTarget;
 use crate::plonk::circuit_builder::CircuitBuilder;
 use crate::plonk::config::AlgebraicHasher;
 

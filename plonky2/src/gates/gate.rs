@@ -1,13 +1,14 @@
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::any::Any;
 use core::fmt::{Debug, Error, Formatter};
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
 
 use hashbrown::HashMap;
+use serde::{Serialize, Serializer};
 
 use crate::field::batch_util::batch_multiply_inplace;
 use crate::field::extension::{Extendable, FieldExtension};
@@ -16,19 +17,55 @@ use crate::gates::selectors::UNUSED_SELECTOR;
 use crate::gates::util::StridedConstraintConsumer;
 use crate::hash::hash_types::RichField;
 use crate::iop::ext_target::ExtensionTarget;
-use crate::iop::generator::WitnessGenerator;
+use crate::iop::generator::WitnessGeneratorRef;
 use crate::plonk::circuit_builder::CircuitBuilder;
+use crate::plonk::circuit_data::CommonCircuitData;
 use crate::plonk::vars::{
     EvaluationTargets, EvaluationVars, EvaluationVarsBase, EvaluationVarsBaseBatch,
 };
+use crate::util::serialization::{Buffer, IoResult};
 
 /// A custom gate.
+///
+/// Vanilla Plonk arithmetization only supports basic fan-in 2 / fan-out 1 arithmetic gates,
+/// each of the form
+///
+/// $$ a.b \cdot q_M + a \cdot q_L + b \cdot q_R + c \cdot q_O + q_C = 0 $$
+///
+/// where:
+/// - $q_M$, $q_L$, $q_R$ and $q_O$ are boolean selectors,
+/// - $a$, $b$ and $c$ are values used as inputs and output respectively,
+/// - $q_C$ is a constant (possibly 0).
+///
+/// This allows expressing simple operations like multiplication, addition, etc. For
+/// instance, to define a multiplication, one can set $q_M=1$, $q_L=q_R=0$, $q_O = -1$ and $q_C = 0$.
+///
+/// Hence, the gate equation simplifies to $a.b - c = 0$, or equivalently to $a.b = c$.
+///
+/// However, such a gate is fairly limited for more complex computations. Hence, when a computation may
+/// require too many of these "vanilla" gates, or when a computation arises often within the same circuit,
+/// one may want to construct a tailored custom gate. These custom gates can use more selectors and are
+/// not necessarily limited to 2 inputs + 1 output = 3 wires.
+/// For instance, plonky2 supports natively a custom Poseidon hash gate that uses 135 wires.
+///
+/// Note however that extending the number of wires necessary for a custom gate comes at a price, and may
+/// impact the overall performances when generating proofs for a circuit containing them.
 pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + Sync {
+    /// Defines a unique identifier for this custom gate.
+    ///
+    /// This is used as differentiating tag in gate serializers.
     fn id(&self) -> String;
 
-    fn export_circom_verification_code(&self) -> String;
-    fn export_solidity_verification_code(&self) -> String;
+    /// Serializes this custom gate to the targeted byte buffer, with the provided [`CommonCircuitData`].
+    fn serialize(&self, dst: &mut Vec<u8>, common_data: &CommonCircuitData<F, D>) -> IoResult<()>;
 
+    /// Deserializes the bytes in the provided buffer into this custom gate, given some [`CommonCircuitData`].
+    fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized;
+
+    /// Defines and evaluates the constraints that enforce the statement represented by this gate.
+    /// Constraints must be defined in the extension of this custom gate base field.
     fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension>;
 
     /// Like `eval_unfiltered`, but specialized for points in the base field.
@@ -82,6 +119,12 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
         res
     }
 
+    /// Defines the recursive constraints that enforce the statement represented by this custom gate.
+    /// This is necessary to recursively verify proofs generated from a circuit containing such gates.
+    ///
+    /// **Note**: The order of the recursive constraints output by this method should match exactly the order
+    /// of the constraints obtained by the non-recursive [`Gate::eval_unfiltered`] method, otherwise the
+    /// prover won't be able to generate proofs.
     fn eval_unfiltered_circuit(
         &self,
         builder: &mut CircuitBuilder<F, D>,
@@ -95,6 +138,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
         selector_index: usize,
         group_range: Range<usize>,
         num_selectors: usize,
+        num_lookup_selectors: usize,
     ) -> Vec<F::Extension> {
         let filter = compute_filter(
             row,
@@ -103,6 +147,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
             num_selectors > 1,
         );
         vars.remove_prefix(num_selectors);
+        vars.remove_prefix(num_lookup_selectors);
         self.eval_unfiltered(vars)
             .into_iter()
             .map(|c| filter * c)
@@ -118,6 +163,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
         selector_index: usize,
         group_range: Range<usize>,
         num_selectors: usize,
+        num_lookup_selectors: usize,
     ) -> Vec<F> {
         let filters: Vec<_> = vars_batch
             .iter()
@@ -130,7 +176,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
                 )
             })
             .collect();
-        vars_batch.remove_prefix(num_selectors);
+        vars_batch.remove_prefix(num_selectors + num_lookup_selectors);
         let mut res_batch = self.eval_unfiltered_base_batch(vars_batch);
         for res_chunk in res_batch.chunks_exact_mut(filters.len()) {
             batch_multiply_inplace(res_chunk, &filters);
@@ -147,6 +193,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
         selector_index: usize,
         group_range: Range<usize>,
         num_selectors: usize,
+        num_lookup_selectors: usize,
         combined_gate_constraints: &mut [ExtensionTarget<D>],
     ) {
         let filter = compute_filter_circuit(
@@ -157,6 +204,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
             num_selectors > 1,
         );
         vars.remove_prefix(num_selectors);
+        vars.remove_prefix(num_lookup_selectors);
         let my_constraints = self.eval_unfiltered_circuit(builder, vars);
         for (acc, c) in combined_gate_constraints.iter_mut().zip(my_constraints) {
             *acc = builder.mul_add_extension(filter, c, *acc);
@@ -164,10 +212,20 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
     }
 
     /// The generators used to populate the witness.
-    /// Note: This should return exactly 1 generator per operation in the gate.
-    fn generators(&self, row: usize, local_constants: &[F]) -> Vec<Box<dyn WitnessGenerator<F>>>;
+    ///
+    /// **Note**: This should return exactly 1 generator per operation in the gate.
+    fn generators(&self, row: usize, local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>>;
 
     /// The number of wires used by this gate.
+    ///
+    /// While vanilla Plonk can only evaluate one addition/multiplication at a time, a wider
+    /// configuration may be able to accomodate several identical gates at once. This is
+    /// particularly helpful for tiny custom gates that are being used extensively in circuits.
+    ///
+    /// For instance, the [crate::gates::multiplication_extension::MulExtensionGate] takes `3*D`
+    /// wires per multiplication (where `D`` is the degree of the extension), hence for a usual
+    /// configuration of 80 routed wires with D=2, one can evaluate 13 multiplications within a
+    /// single gate.
     fn num_wires(&self) -> usize;
 
     /// The number of constants used by this gate.
@@ -176,6 +234,7 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
     /// The maximum degree among this gate's constraint polynomials.
     fn degree(&self) -> usize;
 
+    /// The number of constraints defined by this sole custom gate.
     fn num_constraints(&self) -> usize;
 
     /// Number of operations performed by the gate.
@@ -194,9 +253,20 @@ pub trait Gate<F: RichField + Extendable<D>, const D: usize>: 'static + Send + S
     }
 }
 
-/// A wrapper around an `Rc<Gate>` which implements `PartialEq`, `Eq` and `Hash` based on gate IDs.
+/// A wrapper trait over a `Gate`, to allow for gate serialization.
+pub trait AnyGate<F: RichField + Extendable<D>, const D: usize>: Gate<F, D> {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: Gate<F, D>, F: RichField + Extendable<D>, const D: usize> AnyGate<F, D> for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// A wrapper around an `Arc<AnyGate>` which implements `PartialEq`, `Eq` and `Hash` based on gate IDs.
 #[derive(Clone)]
-pub struct GateRef<F: RichField + Extendable<D>, const D: usize>(pub Arc<dyn Gate<F, D>>);
+pub struct GateRef<F: RichField + Extendable<D>, const D: usize>(pub Arc<dyn AnyGate<F, D>>);
 
 impl<F: RichField + Extendable<D>, const D: usize> GateRef<F, D> {
     pub fn new<G: Gate<F, D>>(gate: G) -> GateRef<F, D> {
@@ -221,6 +291,12 @@ impl<F: RichField + Extendable<D>, const D: usize> Eq for GateRef<F, D> {}
 impl<F: RichField + Extendable<D>, const D: usize> Debug for GateRef<F, D> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         write!(f, "{}", self.0.id())
+    }
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> Serialize for GateRef<F, D> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.id())
     }
 }
 

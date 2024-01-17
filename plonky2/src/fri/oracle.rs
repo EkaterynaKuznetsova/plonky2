@@ -2,13 +2,13 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use itertools::Itertools;
-use maybe_rayon::*;
+use plonky2_field::types::Field;
+use plonky2_maybe_rayon::*;
 
 use crate::field::extension::Extendable;
 use crate::field::fft::FftRootTable;
 use crate::field::packed::PackedField;
 use crate::field::polynomial::{PolynomialCoeffs, PolynomialValues};
-use crate::field::types::Field;
 use crate::fri::proof::FriProof;
 use crate::fri::prover::fri_proof;
 use crate::fri::structure::{FriBatchInfo, FriInstanceInfo};
@@ -26,7 +26,7 @@ use crate::util::{log2_strict, reverse_bits, reverse_index_bits_in_place, transp
 pub const SALT_SIZE: usize = 4;
 
 /// Represents a FRI oracle, i.e. a batch of polynomials which have been Merklized.
-#[derive(Clone)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub struct PolynomialBatch<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
 {
     pub polynomials: Vec<PolynomialCoeffs<F>>,
@@ -34,6 +34,20 @@ pub struct PolynomialBatch<F: RichField + Extendable<D>, C: GenericConfig<D, F =
     pub degree_log: usize,
     pub rate_bits: usize,
     pub blinding: bool,
+}
+
+impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize> Default
+    for PolynomialBatch<F, C, D>
+{
+    fn default() -> Self {
+        PolynomialBatch {
+            polynomials: Vec::new(),
+            merkle_tree: MerkleTree::default(),
+            degree_log: 0,
+            rate_bits: 0,
+            blinding: false,
+        }
+    }
 }
 
 impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
@@ -190,13 +204,11 @@ impl<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>
                 &format!("reduce batch of {} polynomials", polynomials.len()),
                 alpha.reduce_polys_base(polys_coeff)
             );
-            let quotient = composition_poly.divide_by_linear(*point);
+            let mut quotient = composition_poly.divide_by_linear(*point);
+            quotient.coeffs.push(F::Extension::ZERO); // pad back to power of two
             alpha.shift_poly(&mut final_poly);
             final_poly += quotient;
         }
-        // Multiply the final polynomial by `X`, so that `final_poly` has the maximum degree for
-        // which the LDT will pass. See github.com/mir-protocol/plonky2/pull/436 for details.
-        final_poly.coeffs.insert(0, F::Extension::ZERO);
 
         let lde_final_poly = final_poly.lde(fri_params.config.rate_bits);
         let lde_final_values = timed!(

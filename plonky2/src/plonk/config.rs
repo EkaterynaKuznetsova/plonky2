@@ -1,3 +1,11 @@
+//! Hashing configuration to be used when building a circuit.
+//!
+//! This module defines a [`Hasher`] trait as well as its recursive
+//! counterpart [`AlgebraicHasher`] for in-circuit hashing. It also
+//! provides concrete configurations, one fully recursive leveraging
+//! the Poseidon hash function both internally and natively, and one
+//! mixing Poseidon internally and truncated Keccak externally.
+
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -8,8 +16,8 @@ use serde::Serialize;
 use crate::field::extension::quadratic::QuadraticExtension;
 use crate::field::extension::{Extendable, FieldExtension};
 use crate::field::goldilocks_field::GoldilocksField;
-use crate::hash::hash_types::{HashOut, HashOutTarget, RichField};
-use crate::hash::hashing::{PlonkyPermutation, SPONGE_WIDTH};
+use crate::hash::hash_types::{HashOut, RichField};
+use crate::hash::hashing::PlonkyPermutation;
 use crate::hash::keccak::KeccakHash;
 use crate::hash::poseidon::PoseidonHash;
 use crate::iop::target::{BoolTarget, Target};
@@ -43,7 +51,7 @@ pub trait Hasher<F: RichField>: Sized + Copy + Debug + Eq + PartialEq {
     fn hash_pad(input: &[F]) -> Self::Hash {
         let mut padded_input = input.to_vec();
         padded_input.push(F::ONE);
-        while (padded_input.len() + 1) % Self::Permutation::WIDTH != 0 {
+        while (padded_input.len() + 1) % Self::Permutation::RATE != 0 {
             padded_input.push(F::ZERO);
         }
         padded_input.push(F::ONE);
@@ -98,7 +106,7 @@ pub trait GenericConfig<const D: usize>:
 }
 
 /// Configuration using Poseidon over the Goldilocks field.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize)]
 pub struct PoseidonGoldilocksConfig;
 impl GenericConfig<2> for PoseidonGoldilocksConfig {
     type F = GoldilocksField;
