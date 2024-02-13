@@ -117,7 +117,7 @@ pub mod default {
             DefaultGateSerializer,
             ArithmeticGate,
             ArithmeticExtensionGate<D>,
-            BaseSumGate<2>,
+            BaseSumGate<D>,
             ConstantGate,
             CosetInterpolationGate<F, D>,
             ExponentiationGate<F, D>,
